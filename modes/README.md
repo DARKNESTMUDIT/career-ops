@@ -23,11 +23,13 @@ table in `AGENTS.md` (mirrored in `CLAUDE.md`).
 | `apply.md` | `apply` | Live application assistant (form filling; never submits) |
 | `pdf.md` | `pdf` | ATS-optimized PDF generation |
 | `latex.md` | `latex` | LaTeX/Overleaf CV export |
+| `text.md` | `text` | Tailored markdown CV (no PDF) |
 | `cover.md` | `cover` | Cover letter generator |
 | `email.md` | `email` | Application email drafts (draft-only) |
 | `contacto.md` | `contacto` | LinkedIn outreach messages |
 | `deep.md` | `deep` | Deep company-research prompt |
 | `interview.md` | `interview` | Interactive profile & CV onboarding |
+| `master-profile.md` | `master-profile` | Source-backed Master Career Profile import and review |
 | `interview-prep.md` | `interview-prep` | Company-specific interview intelligence |
 | `interview-redflag.md` | `interview-redflag` | Company red-flag detector |
 | `offer-prep.md` | `offer-prep` | Contract reading companion (offer stage) |
@@ -36,6 +38,7 @@ table in `AGENTS.md` (mirrored in `CLAUDE.md`).
 | `outcome.md` | `outcome` | Record application outcome & archive artifacts |
 | `tracker.md` | `tracker` | Applications tracker overview |
 | `patterns.md` | `patterns` | Rejection pattern detector |
+| `calibrate.md` | `calibrate` | Advisory report: do your evaluation scores predict your real outcomes? Reads `/outcome` data; never changes scoring |
 | `titles.md` | `titles` | Adjacent job-title suggestions |
 | `training.md` | `training` | Training & course evaluation |
 | `project.md` | `project` | Portfolio project evaluation |

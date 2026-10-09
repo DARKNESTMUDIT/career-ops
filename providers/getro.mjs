@@ -44,7 +44,7 @@
 // via the shared fetchJsonWithRetry — a large board runs into the hundreds of
 // pages, so one blip mid-sweep shouldn't truncate the whole run (#2506).
 
-import { BROWSER_LIKE_USER_AGENT, fetchJsonWithRetry, fetchTextWithRetry } from './_http.mjs';
+import { BROWSER_LIKE_USER_AGENT, fetchJsonWithRetry, fetchTextWithRetry, sleep } from './_http.mjs';
 
 // Getro returns `created_at` as Unix seconds, but older boards have been seen
 // emitting ISO strings, so both shapes are handled. Non-positive values return
@@ -77,12 +77,7 @@ const DEFAULT_MAX_AGE_DAYS = 90;   // pagination bound only; global filter does 
 // between tenants). Getro showed no rate-limit evidence in manual testing,
 // but a large board is still a long burst of same-host requests without some
 // pacing.
-const INTER_PAGE_DELAY_MS = 150;
-
-function sleep(ms, ctx) {
-  if (typeof ctx?.sleep === 'function') return ctx.sleep(ms);
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const INTER_PAGE_DELAY_MS = 250;
 
 /** Manual override: `entry.getro_collection`, a positive integer or all-digit string. */
 function resolveCollectionOverride(entry) {

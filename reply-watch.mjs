@@ -14,18 +14,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { fileURLToPath } from 'node:url';
 import { matchCandidates, classifyReply } from './reply-matcher.mjs';
 import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
 import {
   openTrackerTransaction, rebuildRow, resolveTrackerPath,
 } from './tracker-utils.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
 import { validateFlags } from './lib/cli-flags.mjs';
+import { localToday } from './lib/local-today.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_CANDIDATES_PATH = path.join(__dirname, 'data', 'reply-candidates.json');
-const APPS_FILE = resolveTrackerPath(__dirname);
-const FOLLOWUPS_FILE = path.join(__dirname, 'data', 'follow-ups.md');
+// Every file here is user layer, so it resolves against the data root
+// (CAREER_OPS_ROOT / CAREER_OPS_DATA_DIR / .career-ops-data marker), never the
+// script's own directory — which is only the default when none is configured.
+const DATA_ROOT = getCareerOpsRoot();
+const DEFAULT_CANDIDATES_PATH = path.join(DATA_ROOT, 'data', 'reply-candidates.json');
+const APPS_FILE = resolveTrackerPath(DATA_ROOT);
+const FOLLOWUPS_FILE = path.join(DATA_ROOT, 'data', 'follow-ups.md');
 
 // Helper to ask a question in the CLI
 function askQuestion(query) {
@@ -168,7 +172,7 @@ function groupStatusRecommendations(recommendations) {
   return { updates, conflicts };
 }
 
-async function updateTrackerStatuses(updates) {
+async function updateTrackerStatuses(updates, onApplied = null) {
   const trackerTransaction = await openTrackerTransaction(APPS_FILE);
 
   try {
@@ -202,7 +206,10 @@ async function updateTrackerStatuses(updates) {
       applied.add(update.num);
     }
 
-    if (applied.size > 0) trackerTransaction.replace(lines.join('\n'));
+    if (applied.size > 0) {
+      trackerTransaction.replace(lines.join('\n'));
+      if (onApplied) onApplied(applied, updatesByNum);
+    }
     return { applied, alreadyCurrent, conflicts, missing, recommendationConflicts: grouped.conflicts };
   } finally {
     trackerTransaction.close();
@@ -308,7 +315,22 @@ async function main() {
 
     const answer = await askQuestion(`Apply recommended status updates to ${APPS_FILE}? (y/N): `);
     if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
-      const result = await updateTrackerStatuses(updates);
+      const statusLogFile = path.join(path.dirname(APPS_FILE), 'status-log.tsv');
+      const todayStr = localToday();
+
+      const result = await updateTrackerStatuses(updates, (applied, updatesByNum) => {
+        for (const num of applied) {
+          const u = updatesByNum.get(num);
+          if (u) {
+            const line = `${num}\t${todayStr}\t${u.oldStatus}\t${u.newStatus}\treply-watch\t\n`;
+            try {
+              fs.appendFileSync(statusLogFile, line, 'utf-8');
+            } catch (err) {
+              console.warn(`Warning: failed to append to status-log.tsv for #${num}: ${err.message}`);
+            }
+          }
+        }
+      });
       for (const r of updates) {
         const count = r.count > 1 ? ` (${r.count} replies)` : '';
         if (result.applied.has(r.num)) {

@@ -188,6 +188,103 @@ try {
     pass('ashby.fetch() folds secondaryLocations (region/locality/country) into location, deduped, " · "-joined');
   else fail(`ashby.fetch() row 0 location = ${JSON.stringify(fetched[0]?.location)}`);
 
+  // Primary-location address block — added 2026-09-29. Ashby's `location`
+  // field is often a first-level subdivision name ("England", "Scotland")
+  // rather than the country a location_filter matches on; the country lives
+  // in `address.postalAddress.addressCountry` instead, and only the
+  // SECONDARY-location version of that field was being folded in (test
+  // above). A UK-primary + US-secondary posting composed to
+  // "England · United States · Remote" — no "United Kingdom" substring
+  // anywhere — which silently dropped two live Docker reqs behind a
+  // location_filter.block entry meant only for US-only postings.
+  const primaryAddr = await ashby.fetch(
+    { name: 'Acme', careers_url: 'https://jobs.ashbyhq.com/acme' },
+    {
+      fetchJson: async () => ({
+        jobs: [
+          {
+            title: 'UK role with US as a secondary hiring region',
+            location: 'England',
+            address: { postalAddress: { addressCountry: 'United Kingdom' } },
+            secondaryLocations: [{ location: 'United States' }],
+            isRemote: true,
+          },
+          {
+            title: 'No address block at all',
+            location: 'Remote',
+          },
+        ],
+      }),
+    },
+  );
+  if (primaryAddr[0]?.location === 'England · United Kingdom · United States · Remote') {
+    pass("ashby.fetch() folds the PRIMARY location's own address.postalAddress.addressCountry into location");
+  } else {
+    fail(`ashby.fetch() primary-address location = ${JSON.stringify(primaryAddr[0]?.location)}`);
+  }
+  // A primary location that already names its country must not repeat it.
+  const namedCountry = await ashby.fetch(
+    { name: 'Acme', careers_url: 'https://jobs.ashbyhq.com/acme' },
+    {
+      fetchJson: async () => ({
+        jobs: [
+          {
+            title: 'London role',
+            location: 'London, United Kingdom',
+            address: { postalAddress: { addressCountry: 'United Kingdom' } },
+            isRemote: true,
+          },
+        ],
+      }),
+    },
+  );
+  if (namedCountry[0]?.location === 'London, United Kingdom · Remote') {
+    pass('ashby.fetch() does not append a primary addressCountry the location already names');
+  } else {
+    fail(`ashby.fetch() named-country location = ${JSON.stringify(namedCountry[0]?.location)}`);
+  }
+  if (primaryAddr[1]?.location === 'Remote') {
+    pass('ashby.fetch() tolerates a job with no address block at all (no crash, no stray fields)');
+  } else {
+    fail(`ashby.fetch() no-address-block location = ${JSON.stringify(primaryAddr[1]?.location)}`);
+  }
+
+  // Remote work model — `workplaceType` / `isRemote` live outside `location`,
+  // which keeps naming the office city on a fully remote posting. Without
+  // folding them in, a location_filter blocking that city silently drops a
+  // remote role. `workplaceType` is authoritative when present; `isRemote` is
+  // the fallback. See formatLocation() in providers/ashby.mjs.
+  const workModel = await ashby.fetch(
+    { name: 'Acme', careers_url: 'https://jobs.ashbyhq.com/acme' },
+    {
+      fetchJson: async () => ({
+        jobs: [
+          { title: 'Remote via workplaceType', location: 'San Francisco', isRemote: true, workplaceType: 'Remote' },
+          { title: 'Hybrid despite isRemote', location: 'New York', isRemote: true, workplaceType: 'Hybrid' },
+          { title: 'Onsite', location: 'Austin', isRemote: false, workplaceType: 'Onsite' },
+          { title: 'isRemote fallback, no workplaceType', location: 'Seattle', isRemote: true },
+          { title: 'Already says remote', location: 'Remote - US', isRemote: true, workplaceType: 'Remote' },
+          { title: 'Blank workplaceType falls back', location: 'Denver', isRemote: true, workplaceType: '   ' },
+        ],
+      }),
+    },
+  );
+
+  const workModelExpected = [
+    'San Francisco · Remote',
+    'New York',
+    'Austin',
+    'Seattle · Remote',
+    'Remote - US',
+    'Denver · Remote',
+  ];
+  const workModelActual = workModel.map((r) => r.location);
+  if (JSON.stringify(workModelActual) === JSON.stringify(workModelExpected)) {
+    pass('ashby.fetch() appends "Remote" from workplaceType/isRemote; workplaceType wins over isRemote; no duplicate "Remote"');
+  } else {
+    fail(`ashby.fetch() work-model locations = ${JSON.stringify(workModelActual)} (expected ${JSON.stringify(workModelExpected)})`);
+  }
+
   if (fetched[1]?.title === '' && fetched[1]?.url === '' && fetched[1]?.location === ''
       && fetched[1]?.salary === null && fetched[1]?.postedAt === undefined)
     pass('ashby.fetch() tolerates a sparse job (empty strings, null salary, undefined postedAt for a bad date)');
@@ -286,6 +383,33 @@ try {
     } else {
       fail(`ashby.fetch() underivable entry: fetchCalled=${underiveFetchCalled}, error=${e.message}`);
     }
+  }
+
+  // ── Description (#3175 phase 2) ──
+  // Ashby's posting-api list ships descriptionPlain for free (same payload,
+  // no per-job request) — mapped verbatim, mirroring lever. A non-string
+  // value degrades to '' rather than leaking a wrong type into the pipeline.
+  const withDesc = await ashby.fetch(
+    { name: 'Acme', careers_url: 'https://jobs.ashbyhq.com/acme' },
+    {
+      fetchJson: async () => ({
+        jobs: [
+          { title: 'Writer', jobUrl: 'https://jobs.ashbyhq.com/acme/w1', descriptionPlain: 'Own the blog.\nShip weekly.' },
+          { title: 'No body' },
+          { title: 'Bad body', descriptionPlain: 42 },
+        ],
+      }),
+    },
+  );
+  if (withDesc[0]?.description === 'Own the blog.\nShip weekly.') {
+    pass('ashby.fetch() carries descriptionPlain through untouched when it is a string');
+  } else {
+    fail(`row 0 description = ${JSON.stringify(withDesc[0]?.description)}`);
+  }
+  if (withDesc[1]?.description === '' && withDesc[2]?.description === '') {
+    pass('ashby.fetch() emits "" for a missing / non-string descriptionPlain');
+  } else {
+    fail(`descriptions = ${JSON.stringify([withDesc[1]?.description, withDesc[2]?.description])}`);
   }
 
 } catch (e) {

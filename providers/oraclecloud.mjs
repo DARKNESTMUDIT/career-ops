@@ -42,7 +42,7 @@
 // User-Agent is sent to reduce (not eliminate) WAF friction.
 
 import { decodeEntities } from './_html-entities.mjs';
-import { BROWSER_LIKE_USER_AGENT, fetchJsonWithRetry } from './_http.mjs';
+import { BROWSER_LIKE_USER_AGENT, fetchJsonWithRetry, sleep } from './_http.mjs';
 
 // `oraclecloud(?:[1-9][0-9]?)?` = oraclecloud.com plus oraclecloud1.com …
 // oraclecloud99.com. No leading zero, at most two digits — a bounded family,
@@ -52,7 +52,7 @@ const ORACLE_HOST_RE = /^[a-z0-9-]+\.fa\.(?:[a-z0-9-]+\.)?(?:ocs\.)?oraclecloud(
 const PAGE_SIZE = 200;
 const MAX_PAGES = 25;             // safety cap (~5000 jobs); hard ceiling like workday
 const RETRY_POLICY = { retries: 3 };
-const INTER_PAGE_DELAY_MS = 150;  // WAF-aware spacing between same-host pages
+const INTER_PAGE_DELAY_MS = 250;  // WAF-aware spacing between same-host pages
 
 // facetsList is a fixed constant on the finder; %3B is the encoded ';' separator.
 const FACETS_LIST = 'LOCATIONS%3BWORK_LOCATIONS%3BWORKPLACE_TYPES%3BTITLES%3BCATEGORIES%3BORGANIZATIONS%3BPOSTING_DATES%3BFLEX_FIELDS';
@@ -78,11 +78,6 @@ function toEpochMs(value) {
   if (!value) return undefined;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? undefined : parsed;
-}
-
-function sleep(ms, ctx) {
-  if (typeof ctx?.sleep === 'function') return ctx.sleep(ms);
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -258,12 +253,20 @@ export default {
 
       // Stop conditions. NOTE: `hasMore` is unreliable on some tenants (e.g.
       // JPMC returns hasMore:false on EVERY page even with 7000+ jobs), so it's
-      // NOT used to stop — trusting it caps the scan at one page. The
-      // authoritative signals are the returned list length and TotalJobsCount:
-      //   - an empty or short page means we've reached the end;
-      //   - once we've paged past TotalJobsCount there's nothing left to fetch.
-      if (listLen === 0 || listLen < PAGE_SIZE) break;
-      if (total !== null && offset + PAGE_SIZE >= total) break;
+      // NOT used to stop — trusting it caps the scan at one page.
+      //
+      // An empty page is always the end. A SHORT page is not: ORC serves fewer
+      // rows than the limit mid-list (American Express reports TotalJobsCount
+      // 454 and serves 200, 199, 54 — one row is filtered server-side), and
+      // treating that 199 as the end dropped the last 54 postings, 12% of the
+      // board. Matching the wider convention: "the API may return fewer results
+      // than the number requested … even if not at the end of the collection"
+      // (Google AIP-158). So a short page only ends the walk when the tenant
+      // reports no total to check it against.
+      if (listLen === 0) break;
+      if (total !== null) {
+        if (offset + PAGE_SIZE >= total) break;
+      } else if (listLen < PAGE_SIZE) break;
     }
     return all;
   },

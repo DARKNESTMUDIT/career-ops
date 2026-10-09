@@ -8,6 +8,8 @@
 //
 // Wire in via a `job_boards:` entry with `provider: themuse`.
 
+import { sleep } from './_http.mjs';
+
 const FEED_BASE = 'https://www.themuse.com/api/public/jobs';
 const TRUSTED_HOST = 'www.themuse.com';
 
@@ -27,12 +29,7 @@ const RETRY_MAX_DELAY_MS = 8_000;
 
 // Delay between successive pages so a 100-page walk doesn't fire as a burst
 // against the same host (mirrors workday.mjs / oraclecloud.mjs).
-const INTER_PAGE_DELAY_MS = 150;
-
-function sleep(ms, ctx) {
-  if (typeof ctx?.sleep === 'function') return ctx.sleep(ms);
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const INTER_PAGE_DELAY_MS = 250;
 
 /** Parses a `Retry-After` header value (seconds, or an HTTP-date) to ms, or null. */
 function parseRetryAfterMs(value) {
