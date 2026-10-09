@@ -110,12 +110,12 @@ export function formatRankSegment(score, reason) {
  * are structurally excluded, and a row already carrying `| rank: ` is skipped so
  * re-runs are idempotent without any state file.
  */
-export function parsePendingEntries(text) {
+export function parsePendingEntries(text, { includeRanked = false } = {}) {
   const out = [];
   const lines = String(text ?? '').split('\n');
   lines.forEach((raw, index) => {
     if (!raw.startsWith('- [ ] ')) return;
-    if (raw.includes(RANK_LABEL)) return;
+    if (!includeRanked && raw.includes(RANK_LABEL)) return;
     const cells = raw.slice(6).split('|').map(c => c.trim());
     out.push({
       index,

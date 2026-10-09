@@ -62,9 +62,10 @@ test("the role title reaches the prompt, so the planner is not drafting blind", 
   assert.ok(buildAnswerPrompt({ title: "Acme - Staff Engineer", fields: FIELDS }).includes("Acme - Staff Engineer"));
 });
 
-test("durable notes appear under their own heading when present, and not at all when empty", () => {
+test("memory cannot introduce candidate claims", () => {
   const withMemory = buildAnswerPrompt({ title: "Acme", fields: FIELDS, memory: "Prefers remote." });
-  assert.match(withMemory, /Durable notes about the user:\nPrefers remote\./);
+  assert.ok(!withMemory.includes("Prefers remote."));
+  assert.match(withMemory, /Do not read memory or reports as candidate evidence/);
 
   // Both spellings of "no memory", since the route passes readMemory().trim().
   for (const empty of [undefined, ""]) {

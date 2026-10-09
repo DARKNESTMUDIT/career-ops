@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCli } from "@/lib/clis";
-import { careerOpsRoot, readMemory } from "@/lib/career-ops";
+import { careerOpsRoot } from "@/lib/career-ops";
 import { getSession } from "@/lib/apply/session";
 import { buildAnswerPrompt } from "@/lib/apply/answer-prompt.mjs";
 import { runPlanner } from "@/lib/apply/planner";
@@ -78,10 +78,9 @@ export async function POST(req: Request) {
       if (!resolved) return fail(`CLI '${cliId}' not found on this machine`);
       const { spec, binPath } = resolved;
 
-      const mem = readMemory().trim();
-      const prompt = buildAnswerPrompt({ title: s.title, fields: s.fields, memory: mem });
+      const prompt = buildAnswerPrompt({ title: s.title, fields: s.fields });
 
-      log(`Form: "${s.title}" · ${s.fields.length} fields · prompt ${prompt.length} chars · memory ${mem.length} chars`);
+      log(`Form: "${s.title}" · ${s.fields.length} fields · prompt ${prompt.length} chars · primary candidate sources only`);
       log(`Planner: ${cliId} (${binPath})`);
       const result = await runPlanner({
         cliId,
