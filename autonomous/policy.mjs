@@ -6,6 +6,28 @@ const validDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) &&
 const normalize = s => String(s).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 export const identityKey = (company, role) => hash(`${normalize(company)}\n${normalize(role)}`);
 
+// Exact quotation alone does not prove the model's extracted number/date was
+// actually in that quotation. Ambiguous numeric dates and derived dates fail
+// closed; the planner must obtain explicit evidence or leave the field unknown.
+export function quantifiedEvidenceIssues(job) {
+  const issues=[];
+  for(const key of ['start','end','deadline']) {
+    if(!validDate(job[key]))continue; // assess() reports absent/invalid values.
+    const [year,month,day]=job[key].split('-').map(Number);
+    const name=['January','February','March','April','May','June','July','August','September','October','November','December'][month-1];
+    const quoted=String(job.evidence?.[key] || '');
+    const monthPattern=`(?:${name}|${name.slice(0,3)}\\.?)`;
+    const spelled=new RegExp(`\\b(?:${monthPattern}\\s+0?${day}(?:st|nd|rd|th)?[,]?\\s+${year}|0?${day}(?:st|nd|rd|th)?\\s+(?:of\\s+)?${monthPattern}[,]?\\s+${year})\\b`,'i');
+    if(!quoted.includes(job[key]) && !spelled.test(quoted))issues.push(`${key} value is not explicit in its evidence`);
+  }
+  if(Number.isFinite(job.hours)) {
+    const value=String(job.hours).replace('.','\\.');
+    const hours=new RegExp(`\\b${value}\\s*(?:hours?|hrs?|h)\\s*(?:per\\s+week|a\\s+week|weekly|/\\s*week)\\b`,'i');
+    if(!hours.test(String(job.evidence?.hours || '')))issues.push('Weekly hours value is not explicit in its evidence');
+  }
+  return issues;
+}
+
 // A model extracts evidence. It cannot waive these gates or authorize an action.
 export function assess(job, policy, today = dayInIndia()) {
   const missing = [], reject = [];

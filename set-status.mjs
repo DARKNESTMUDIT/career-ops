@@ -129,6 +129,7 @@ const USAGE = `Usage: node set-status.mjs <report#|company> <state> [--note "...
   --report N         Select the row whose Report cell links report #N
   --note "..."       Append to the Notes cell ("; "-separated, idempotent)
   --role "..."       Disambiguate when several rows share the company (fuzzy match)
+  --expect-status S  Write only if the locked row still has this canonical status
   --on YYYY-MM-DD    Real event date for the status-log entry (defaults to today —
                      pass it when the transition happened earlier than it's recorded)
   --source NAME      Attribution for the transition ledger: set-status (default)
@@ -185,8 +186,8 @@ function renderStatesSection() {
 
 const rawArgs = process.argv.slice(2);
 const positional = [];
-const flags = { note: null, role: null, on: null, row: null, report: null, source: null, force: false, dryRun: false, json: false };
-const VALUE_FLAGS = { '--note': 'note', '--role': 'role', '--on': 'on', '--row': 'row', '--report': 'report', '--source': 'source' };
+const flags = { note: null, role: null, on: null, row: null, report: null, source: null, expectStatus: null, force: false, dryRun: false, json: false };
+const VALUE_FLAGS = { '--note': 'note', '--role': 'role', '--on': 'on', '--row': 'row', '--report': 'report', '--source': 'source', '--expect-status': 'expectStatus' };
 
 /**
  * Is the caller asking for help, rather than passing "--help" as a VALUE?
@@ -566,6 +567,11 @@ if (flags.role && !flags.force && !roleMatchesTarget) {
   );
 }
 const oldStatus = target.status;
+if (flags.expectStatus != null) {
+  const expected = resolveCanonicalState(flags.expectStatus, states);
+  if (!expected) failWith(EXIT_USAGE, 'invalid-state', `Invalid expected status: ${flags.expectStatus}`);
+  if (oldStatus !== expected) failWith(EXIT_AMBIGUOUS, 'status-changed', `Expected ${expected}, found ${oldStatus}; refusing stale status update`);
+}
 const note = flags.note != null ? cell(flags.note) : null;
 
 // Rebuild only the matched line: change the Status cell, append the note, keep

@@ -35,9 +35,10 @@ function stripMarkup(content) {
  * Exported for tests.
  *
  * @param {unknown} content
+ * @param {{maxChars?: number}} [options] Explicit full-JD callers may raise the scanner's default cap.
  * @returns {string}
  */
-export function htmlToText(content) {
+export function htmlToText(content, options) {
   if (typeof content !== 'string' || !content) return '';
   // Strip literal markup before decoding: quote entities inside a quoted
   // attribute are data, and decoding them first would turn them into false
@@ -51,5 +52,5 @@ export function htmlToText(content) {
     .replace(/<(?=\/?[a-z!?])/gi, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, DESCRIPTION_CAP);
+    .slice(0, Number.isSafeInteger(options?.maxChars) && options.maxChars > 0 ? options.maxChars : DESCRIPTION_CAP);
 }

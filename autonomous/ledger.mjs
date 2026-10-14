@@ -35,12 +35,14 @@ export class Ledger {
       }
       const token = randomUUID();
       this.db.prepare('INSERT INTO runner_lock VALUES (1,?,?)').run(token, process.pid);
+      this.lockToken = token;
       // A dead process may have sent an application. Never turn this into a retry.
       this.db.prepare("UPDATE jobs SET state='uncertain' WHERE state='submitting'").run();
       return token;
     });
   }
-  release(token) { this.db.prepare('DELETE FROM runner_lock WHERE token=?').run(token); }
+  release(token) { this.db.prepare('DELETE FROM runner_lock WHERE token=?').run(token); if(this.lockToken===token)this.lockToken=null; }
+  ownsLock() { const lock=this.db.prepare('SELECT token,pid FROM runner_lock').get(); return !!this.lockToken && lock?.token===this.lockToken && lock.pid===process.pid; }
   add(url) {
     const normalized = normalizeUrl(url);
     const u = new URL(normalized);
@@ -67,16 +69,26 @@ export class Ledger {
     if (this.db.prepare('SELECT id FROM attempts WHERE job_id=?').get(id)) throw new Error('Submission attempt exists; reconcile receipt, never retry');
     this.update(id, 'discovered', { reasons: [] });
   }
+  resume() {
+    if (this.get('integrityFailure')) throw new Error('Resolve the recorded integrity failure before resuming');
+    this.set('paused',false); this.set('pauseReason',null);
+  }
   reserve(id, { limit, pilotLimit = 3, fingerprints, today = dayInIndia() }) {
     return this.transaction(() => {
       if (this.get('paused')) throw new Error('Runner is paused');
+      if (this.get('integrityFailure')) throw new Error('Integrity failure requires resolution');
       if (!['pilot', 'initial', 'expanded'].includes(this.get('stage'))) throw new Error('Dry-run rollout gate');
       const j = this.job(id);
       if (j?.state !== 'ready' || JSON.stringify(j.payload.fingerprints) !== JSON.stringify(fingerprints)) throw new Error('Stale or unready application');
-      if (this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE day=?').get(today).n >= limit) throw new Error('Daily limit reached');
-      if (this.get('stage') === 'pilot' && this.db.prepare('SELECT COUNT(*) AS n FROM attempts').get().n >= pilotLimit) throw new Error('Pilot limit reached');
+      const ceiling = this.get('stage') === 'pilot' ? 3 : this.get('stage') === 'initial' ? 5 : 10;
+      if (!Number.isInteger(limit) || limit < 1) throw new Error('Invalid daily limit');
+      if (this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE day=?').get(today).n >= Math.min(limit,ceiling)) throw new Error('Daily limit reached');
+      if (this.get('stage') === 'pilot' && this.db.prepare('SELECT COUNT(*) AS n FROM attempts').get().n >= Math.min(pilotLimit,3)) throw new Error('Pilot limit reached');
       if (this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('submitting','uncertain')").get().n) throw new Error('Unresolved submission requires reconciliation');
       const attempt = randomUUID();
+      // A previously clean day is provisional until all its later actions also
+      // finish cleanly. A crash after this intent must not leave clean credit.
+      this.set('cleanDays',(this.get('cleanDays') || []).filter(day=>day!==today));
       this.db.prepare('INSERT INTO attempts VALUES (?,?,?,?,NULL)').run(attempt, id, today, 'intent');
       this.db.prepare("UPDATE jobs SET state='submitting' WHERE id=?").run(id);
       this.event(id, 'submission-intent', { attempt, fingerprints });
@@ -86,8 +98,12 @@ export class Ledger {
   receipt(id, receipt) {
     if (!receipt || !['form-confirmation', 'gmail-accepted'].includes(receipt.kind) || !receipt.reference) throw new Error('Submission evidence required');
     this.transaction(() => {
-      const attempt = this.db.prepare('SELECT id FROM attempts WHERE job_id=?').get(id);
+      const attempt = this.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id);
       if (!attempt) throw new Error('No recorded submission intent');
+      if (attempt.outcome === 'confirmed') {
+        if (JSON.parse(attempt.receipt).reference !== receipt.reference) throw new Error('Conflicting receipt requires reconciliation');
+        return; // Reconciliation must not move an Applied job backwards.
+      }
       this.db.prepare("UPDATE attempts SET outcome='confirmed',receipt=? WHERE job_id=?").run(JSON.stringify(receipt), id);
       this.db.prepare("UPDATE jobs SET state='confirmed' WHERE id=?").run(id);
       this.event(id, 'confirmed', receipt);
@@ -97,6 +113,6 @@ export class Ledger {
     const lock = this.db.prepare('SELECT pid FROM runner_lock').get();
     let active = lock ?? null;
     if (lock) { try { process.kill(lock.pid, 0); } catch (e) { if (e.code === 'ESRCH') active = null; } }
-    return { paused: this.get('paused'), pauseReason: this.get('pauseReason'), lastRunError: this.get('lastRunError'), stage: this.get('stage'), active, todayAttempts: this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE day=?').get(dayInIndia()).n, jobs: this.jobs(), attempts: this.db.prepare('SELECT * FROM attempts').all() };
+    return { paused: this.get('paused'), pauseReason: this.get('pauseReason'), lastRunError: this.get('lastRunError'), stage: this.get('stage'), rollout:this.get('rollout'), gmail:this.get('gmailConnection'), active, todayAttempts: this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE day=?').get(dayInIndia()).n, jobs: this.jobs(), attempts: this.db.prepare('SELECT * FROM attempts').all() };
   }
 }

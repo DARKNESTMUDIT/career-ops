@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 type Job = { id: string; url: string; track: string | null; state: string; payload: { company?: string; role?: string; fit?: number; reasons?: string[] } };
-type Status = { paused: boolean; pauseReason?: string; lastRunError?: string; stage: string; active: { pid: number } | null; todayAttempts: number; jobs: Job[]; attempts: { id: string; outcome: string; receipt: string | null }[] };
+type Status = { paused: boolean; pauseReason?: string; lastRunError?: string; stage: string; gmail?: { connected: boolean; email: string }; rollout?: { completeDryRuns: number; tracks: string[]; verifiedApplications: number; consecutiveCleanDays: number; reasons: string[]; adapterValidation: Record<string, boolean> }; active: { pid: number } | null; todayAttempts: number; jobs: Job[]; attempts: { id: string; outcome: string; receipt: string | null }[] };
 export default function AutonomousPage() {
   const [status, setStatus] = useState<Status | null>(null), [error, setError] = useState(""), [track, setTrack] = useState("all"), [busy, setBusy] = useState(false);
   async function refresh() { try { const r = await fetch("/api/autonomous"); const data = await r.json(); if (!r.ok) throw new Error(data.error); setStatus(data); } catch (e) { setError(String(e)); } }
@@ -10,6 +10,13 @@ export default function AutonomousPage() {
   return <div className="mx-auto max-w-6xl space-y-6 p-6 md:p-10">
     <div><h1 className="text-3xl font-semibold">Internship runner</h1><p className="mt-2 text-muted">Remote through June 2027 · Summer July–August 2027</p></div>
     <p className="rounded-lg border border-border bg-surface p-4">Dry-run rollout. Applications are not sent while submission adapters and receipt checks await validation. Prepared resumes do not count as complete application dry runs.</p>
+    <div className="rounded-lg border border-border p-4 space-y-2" aria-label="Connection and rollout progress">
+      <p>Gmail: {status?.gmail?.connected ? `Connected as ${status.gmail.email}` : "Not connected"}. Connection status reflects the last successful verification.</p>
+      <p>Complete dry runs: {status?.rollout?.completeDryRuns ?? 0}/5 · Tracks: {status?.rollout?.tracks.join(", ") || "None"}</p>
+      <p>Verified applications: {status?.rollout?.verifiedApplications ?? 0} · Consecutive clean operating days: {status?.rollout?.consecutiveCleanDays ?? 0}</p>
+      {status?.rollout?.reasons.map(reason=><p key={reason} className="text-muted">{reason}</p>)}
+      {status?.rollout?.adapterValidation && <p>Adapter validation: {Object.entries(status.rollout.adapterValidation).map(([name,valid])=>`${name}: ${valid ? "validated" : "pending"}`).join(" · ")}</p>}
+    </div>
     {error && <p role="alert" className="text-red-600">{error}</p>}
     {(status?.lastRunError || status?.pauseReason) && <p role="status">{status.lastRunError || status.pauseReason}</p>}
     <div className="flex flex-wrap items-center gap-3">

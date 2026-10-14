@@ -16,14 +16,27 @@ export const evaluationSchema = {
 
 // Dedicated no-tools planner: auth stays in CODEX_HOME, but plugins/MCP/hooks are
 // not loaded. Preserve only the explicitly configured model and reasoning effort.
-export function modelSelection(config = '') {
+export function modelSelection(config = '', env = process.env) {
   const top = config.split(/^\[/m)[0];
+  const overrides = {
+    model: env.CAREER_OPS_PLANNER_MODEL,
+    model_reasoning_effort: env.CAREER_OPS_PLANNER_REASONING_EFFORT,
+  };
+  if (overrides.model !== undefined && (typeof overrides.model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(overrides.model))) {
+    throw new Error('Invalid CAREER_OPS_PLANNER_MODEL: use a model identifier with letters, digits, dots, underscores or hyphens');
+  }
+  if (overrides.model_reasoning_effort !== undefined && !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(overrides.model_reasoning_effort)) {
+    throw new Error('Invalid CAREER_OPS_PLANNER_REASONING_EFFORT');
+  }
   return ['model', 'model_reasoning_effort'].flatMap(k => {
+    if (overrides[k] !== undefined) return ['-c', `${k}=${JSON.stringify(overrides[k])}`];
     const m = top.match(new RegExp(`^${k}\\s*=\\s*("[^"\\n]+")\\s*$`, 'm'));
     return m ? ['-c', `${k}=${m[1]}`] : [];
   });
 }
-export async function planJSON(prompt, schema = evaluationSchema, timeoutMs = 180000) {
+export async function planJSON(prompt, schema = evaluationSchema, timeoutMs = 180000, env = process.env) {
+  // Validate project overrides before creating files or starting a model process.
+  modelSelection('', env);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'career-planner-'));
   const schemaPath = path.join(dir, 'schema.json'), resultPath = path.join(dir, 'result.json');
   fs.writeFileSync(schemaPath, JSON.stringify(schema), { mode: 0o600 });
@@ -31,7 +44,7 @@ export async function planJSON(prompt, schema = evaluationSchema, timeoutMs = 18
   const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
   try {
     await new Promise((resolve, reject) => {
-      const child = spawn('codex', ['--ask-for-approval','never','exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only', '-c', 'features.shell_tool=false', ...modelSelection(config), '--output-schema', schemaPath, '--output-last-message', resultPath, '-'], { cwd: dir, stdio: ['pipe','pipe','pipe'] });
+      const child = spawn('codex', ['--ask-for-approval','never','exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only', '-c', 'features.shell_tool=false', ...modelSelection(config, env), '--output-schema', schemaPath, '--output-last-message', resultPath, '-'], { cwd: dir, stdio: ['pipe','pipe','pipe'] });
       let error = '', killed = false;
       const timer = setTimeout(() => { killed = true; child.kill('SIGKILL'); }, timeoutMs);
       child.stdout.on('data', () => {});

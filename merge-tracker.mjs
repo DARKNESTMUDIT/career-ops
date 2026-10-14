@@ -41,6 +41,7 @@ if (MERGE_TRACKER_HELP_REQUESTED) {
 
 Options:
   --dry-run        Preview the merge without writing files
+  --append-only    Refuse duplicate matches instead of updating existing rows
   --verify         Run pipeline verification after a successful merge
   --migrate        Rewrite legacy report links relative to the tracker
   --migrate-via    Add the Via column to a legacy tracker
@@ -99,6 +100,7 @@ function loadFailedReportNumbers(path) {
 }
 const FAILED_REPORT_NUMBERS = loadFailedReportNumbers(BATCH_STATE_FILE);
 const DRY_RUN = process.argv.includes('--dry-run');
+const APPEND_ONLY = process.argv.includes('--append-only');
 const VERIFY = process.argv.includes('--verify');
 const MIGRATE = process.argv.includes('--migrate');
 const MIGRATE_VIA = process.argv.includes('--migrate-via');
@@ -1705,6 +1707,12 @@ for (const file of tsvFiles) {
       || existingApps.find(app => fuzzyTierMatch(app, true));
   }
 
+  if (duplicate && APPEND_ONLY) {
+    console.error(`Refusing ${file}: append-only merge matched existing tracker #${duplicate.num}`);
+    failedAdditions.push(file);
+    skipped++;
+    continue;
+  }
   if (duplicate) {
     // An unscoreable re-eval (N/A/—/-) carries no score to write through. Its
     // score parses to 0, so the downgrade path below would read it as a genuine

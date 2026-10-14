@@ -3,11 +3,16 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { fetchJdViaKnownApi } from '../browser-extract.mjs';
 import { adapterFor } from './browser.mjs';
+import { fetchUnstopPosting } from './unstop.mjs';
+import { fetchSmartRecruitersPosting } from './smartrecruiters.mjs';
 const exec = promisify(execFile);
 export async function fetchFullPosting(url) {
   const u = new URL(url);
-  if (u.protocol !== 'https:' || (!adapterFor(url) && !['internshala.com','unstop.com','www.unstop.com'].includes(u.hostname))) throw new Error('Unsupported discovery source');
-  let capture = await fetchJdViaKnownApi(url, 50000, 15000);
+  if (u.protocol !== 'https:' || (!adapterFor(url) && !['internshala.com','unstop.com','www.unstop.com','jobs.smartrecruiters.com'].includes(u.hostname))) throw new Error('Unsupported discovery source');
+  let capture = await fetchSmartRecruitersPosting(url);
+  if(u.hostname==='jobs.smartrecruiters.com' && !capture)throw new Error('Exact SmartRecruiters posting URL required');
+  if(!capture)capture = await fetchUnstopPosting(url);
+  if(!capture)capture = await fetchJdViaKnownApi(url, 50000, 15000);
   if (!capture) {
     const { stdout } = await exec(process.execPath, [fileURLToPath(new URL('../browser-extract.mjs', import.meta.url)), url, '--mode','jd','--max-chars','50000','--timeout','20000'], { timeout:30000, maxBuffer:1024*1024 });
     capture = JSON.parse(stdout);
