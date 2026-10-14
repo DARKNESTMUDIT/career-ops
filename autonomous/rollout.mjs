@@ -78,7 +78,16 @@ export function pendingWork(jobs) {
 }
 
 export function prioritize(jobs) {
-  const sorted = [...jobs].sort((a,b)=>(a.payload.deadline || '9999').localeCompare(b.payload.deadline || '9999') || (b.payload.fit || 0)-(a.payload.fit || 0) || a.updated.localeCompare(b.updated));
+  const unenriched = job => job.state === 'discovered' && !job.payload.deadline && job.payload.fit == null;
+  const sorted = [...jobs].sort((a,b) => {
+    const rank = (a.payload.deadline || '9999').localeCompare(b.payload.deadline || '9999') || (b.payload.fit || 0)-(a.payload.fit || 0);
+    if (rank) return rank;
+    // Use a fixed category before choosing timestamp direction, preserving a
+    // transitive order when prepared and unenriched entries share rank keys.
+    const rawA = unenriched(a), rawB = unenriched(b);
+    if (rawA !== rawB) return rawA ? 1 : -1;
+    return (rawA ? b.updated.localeCompare(a.updated) : a.updated.localeCompare(b.updated)) || String(a.id ?? '').localeCompare(String(b.id ?? ''));
+  });
   // Alternate known tracks without starving unclassified discovery. Within each
   // track retain deadline then fit ordering.
   const queues = ['remote','summer',null].map(track=>sorted.filter(j=>(j.track || null)===track));

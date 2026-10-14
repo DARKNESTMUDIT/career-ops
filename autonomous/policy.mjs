@@ -67,9 +67,9 @@ export function assess(job, policy, today = dayInIndia()) {
     if (job.remote === false && (!job.evidence?.country || !job.jd?.includes(job.evidence.country))) missing.push('On-site country unverified');
   }
   if (job.pay === 'unpaid') {
-    if (job.fit < policy.unpaidFit) reject.push('Unpaid fit below threshold');
+    if (Number.isFinite(job.fit) && job.fit < policy.unpaidFit) reject.push('Unpaid fit below threshold');
     for (const key of ['credibleEmployer', 'project', 'supervision']) if (job[key] !== true || !job.evidence?.[key] || !job.jd?.includes(job.evidence[key])) missing.push(`Unpaid ${key} evidence required`);
-  } else if (job.fit < policy.minimumFit) reject.push('Fit below threshold');
+  } else if (Number.isFinite(job.fit) && job.fit < policy.minimumFit) reject.push('Fit below threshold');
   return { state: reject.length ? 'rejected' : missing.length ? 'exception' : 'eligible', reasons: [...reject, ...missing] };
 }
 
