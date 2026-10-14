@@ -24,8 +24,8 @@ new candidates or bypasses certification, eligibility, recipient evidence,
 bundle fingerprints, rollout, quotas, duplicate checks, or the runner lock.
 Preparation is required even when live operation is authorized.
 
-Five current complete bundles across both configured tracks unlock the pilot
-stage. Three receipt-and-tracker-verified pilots precede five applications/day.
+One current complete verified application unlocks the pilot stage, independently
+of the other track. Three receipt-and-tracker-verified pilots precede five applications/day.
 Ten/day requires ten verified applications and seven consecutive completed clean
 operating days. These are ceilings. Synthetic test fixtures earn no production
 credit. Unsupported forms, missing answers and eligibility remain exceptions.

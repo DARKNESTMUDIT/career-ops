@@ -133,10 +133,10 @@ test('real gate refuses missing lock, source drift, bundle drift, absent credent
   const f=await fixture(t);let posts=0;const fetcher=async()=>{posts++;return {ok:true,json:async()=>({id:`synthetic-${posts}`})};};
   f.unlock();await assert.rejects(gmail.sendApplicationEmail({...f,fetcher}),/active runner lock/);f.lock();
   fs.appendFileSync(path.join(f.root,'cv.md'),'\nSynthetic changed source');
-  await assert.rejects(gmail.sendApplicationEmail({...f,context:loadContext(f.root),fetcher}),/Five complete/);
+  await assert.rejects(gmail.sendApplicationEmail({...f,context:loadContext(f.root),fetcher}),/One complete/);
   fs.writeFileSync(path.join(f.root,'cv.md'),'# Synthetic Candidate\n\n## Experience\n- Product research and AI prompt experiments\n');
   const pdf=path.join(f.ledger.job(f.id).payload.bundle,'resume.pdf'),bytes=fs.readFileSync(pdf);
-  fs.appendFileSync(pdf,'changed');await assert.rejects(gmail.sendApplicationEmail({...f,fetcher}),/Five complete|changed bundle/);fs.writeFileSync(pdf,bytes);
+  fs.appendFileSync(pdf,'changed');await assert.rejects(gmail.sendApplicationEmail({...f,fetcher}),/One complete|changed bundle/);fs.writeFileSync(pdf,bytes);
   await assert.rejects(gmail.sendApplicationEmail({...f,accessProvider:undefined,fetcher}),/credentials forbidden/);
   assert.equal(posts,0);assert.equal(f.ledger.status().attempts.length,0);
   for(const job of f.ledger.jobs().slice(0,3)) {
@@ -187,19 +187,19 @@ test('real live runner orchestration submits only selected email ID, synchronize
 });
 
 
-test('real authorization refuses undercount, missing track, pause, unresolved send and expired eligibility without attempts',async t=>{
+test('real authorization requires a current bundle and rejects individual stale jobs without a batch prerequisite',async t=>{
   const f=await fixture(t),original=f.ledger.job(f.id),authorize=()=>certified.authorizeSubmission(f.ledger,f.id,f.context.fingerprints,'gmail');
   assert.equal(authorize().stage,'pilot');
-  f.ledger.update(f.id,'exception',{});assert.throws(authorize,/Five complete/);f.ledger.update(f.id,'ready',{});
-  const tracks=f.ledger.jobs().map(j=>({id:j.id,track:j.track}));
-  f.ledger.db.prepare("UPDATE jobs SET track='remote'").run();
-  assert.throws(authorize,/both tracks/);
-  for(const j of tracks)f.ledger.db.prepare('UPDATE jobs SET track=? WHERE id=?').run(j.track,j.id);
+  f.ledger.update(f.id,'exception',{});assert.throws(authorize,/Incomplete or changed bundle/);f.ledger.update(f.id,'ready',{});
+  for(const job of f.ledger.jobs())f.ledger.update(job.id,'exception',{});
+  assert.throws(authorize,/One complete/);
+  f.ledger.update(f.id,'ready',{});assert.equal(authorize().stage,'pilot');
+  assert.equal(certified.rolloutStatus(f.ledger,f.context.fingerprints).completeDryRuns,1);
   f.ledger.set('paused',true);assert.throws(authorize,/Runner is paused/);f.ledger.set('paused',false);
   f.ledger.update(f.id,'uncertain',{});assert.throws(authorize,/reconciliation/);f.ledger.update(f.id,'ready',{});
   for(const field of ['deadline','start']){
     f.ledger.update(f.id,'ready',{[field]:'2000-01-01'});
-    assert.throws(authorize,/Five complete|deadline passed|start date passed/);
+    assert.throws(authorize,/One complete|deadline passed|start date passed/);
     f.ledger.update(f.id,'ready',{[field]:original.payload[field]});
   }
   assert.equal(authorize().stage,'pilot');assert.equal(f.ledger.status().attempts.length,0);assertProductionAdapters();
@@ -217,8 +217,24 @@ test('live orchestration rejects posting and reviewed-channel drift at the final
   f.ledger.update(f.id,'ready',original.payload);
   const registry=path.join(f.root,'data/autonomous/email-channels.json'),saved=fs.readFileSync(registry,'utf8'),channels=JSON.parse(saved);
   channels[original.url].recipient='changed@employer.invalid';fs.writeFileSync(registry,JSON.stringify(channels));
-  await assert.rejects(orchestration.run({...base,fetchJD:async()=>({text:original.payload.jd})}),/Five complete/);
+  await assert.rejects(orchestration.run({...base,fetchJD:async()=>({text:original.payload.jd})}),/One complete/);
   assert.equal(posts,0);assert.equal(f.ledger.status().attempts.length,0);
   fs.writeFileSync(registry,saved);assert.equal(certified.rolloutStatus(f.ledger,loadContext(f.root).fingerprints).completeDryRuns,5);
   assertProductionAdapters();
+});
+
+
+test('one individually verified email bundle authorizes and completes real live orchestration without both tracks',async t=>{
+  const f=await fixture(t),selected=f.ledger.job(f.id);let posts=0;
+  for(const job of f.ledger.jobs().filter(j=>j.id!==f.id))f.ledger.update(job.id,'exception',{});
+  const state=certified.authorizeSubmission(f.ledger,f.id,f.context.fingerprints,'gmail');
+  assert.equal(state.stage,'pilot');assert.equal(state.limit,3);assert.equal(state.completeDryRuns,1);assert.deepEqual(state.tracks,[selected.track]);
+  f.unlock();fixtureBoundary.accessProvider=f.accessProvider;
+  fixtureBoundary.fetcher=async(url,options)=>{posts++;assert.ok(url.endsWith('/messages/send'));assert.equal(options.method,'POST');return {ok:true,json:async()=>({id:'synthetic-single-ready'})};};
+  t.after(()=>{delete fixtureBoundary.fetcher;delete fixtureBoundary.accessProvider;});
+  const result=await orchestration.run({root:f.root,dryRun:false,jobIds:[f.id],fetchJD:async url=>{assert.equal(url,selected.url);return {text:selected.payload.jd};},evaluate:async()=>{throw new Error('No live evaluation');}});
+  assert.equal(result.submitted,1);assert.deepEqual(result.tracker,{synced:1,failed:0});assert.equal(posts,1);
+  assert.equal(f.ledger.job(f.id).state,'applied');assert.equal(f.ledger.status().attempts.length,1);
+  assert.match(fs.readFileSync(process.env.CAREER_OPS_TRACKER,'utf8'),/receipt gmail-accepted: synthetic-single-ready/);
+  assert.ok(f.ledger.jobs().filter(j=>j.id!==f.id).every(j=>j.state==='exception'));assertProductionAdapters();
 });

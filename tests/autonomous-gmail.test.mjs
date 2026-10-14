@@ -36,7 +36,7 @@ test('email draft rejects unverified recipients and unsupported candidate claims
 test('send entrypoint refuses failed rollout before any credential or network access',async t=>{
   const fixture=ledgerFixture(t);let contacted=false;const token=fixture.ledger.acquire();
   try {
-    await assert.rejects(sendApplicationEmail({...fixture,context:{fingerprints:{}},accessProvider:async()=>{contacted=true;}}),/Five complete/);
+    await assert.rejects(sendApplicationEmail({...fixture,context:{fingerprints:{}},accessProvider:async()=>{contacted=true;}}),/One complete/);
     assert.equal(contacted,false);assert.equal(fixture.ledger.status().attempts.length,1);
   } finally {fixture.ledger.release(token);}
 });

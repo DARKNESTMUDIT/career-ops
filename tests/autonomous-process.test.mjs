@@ -17,7 +17,7 @@ test('supervised CLI preserves a structured rollout refusal without exposing raw
   for(const name of ['_profile','_custom'])fs.writeFileSync(path.join(root,`modes/${name}.md`),'Synthetic only');
   const env={...process.env,CAREER_OPS_ROOT:root,CAREER_OPS_DATA_DIR:root,CAREER_OPS_TRACKER:path.join(root,'data/applications.md')};
   await assert.rejects(boundedProcess(process.execPath,[fileURLToPath(new URL('../autonomous-runner.mjs',import.meta.url)),'run','--live'],{env,timeoutMs:10000}),error=>{
-    assert.match(JSON.parse(error.stderr).error,/Five complete, current dry runs/);return true;
+    assert.match(JSON.parse(error.stderr).error,/One complete, current verified application/);return true;
   });
   const ledger=new Ledger(root);try{assert.equal(ledger.status().attempts.length,0);assert.equal(ledger.status().active,null);}finally{ledger.close();}
 });
