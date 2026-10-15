@@ -1,4 +1,4 @@
-import { dayInIndia } from './policy.mjs';
+import { dayInIndia, currentSchedule } from './policy.mjs';
 import { verifyBundle } from './bundle.mjs';
 
 // Validation is an explicit engineering gate, independent of evaluations.
@@ -9,7 +9,8 @@ export const ADAPTER_VALIDATION = Object.freeze({ greenhouse:false, lever:false,
 export function rolloutStatus(ledger, fingerprints, today = dayInIndia()) {
   const jobs = ledger.jobs();
   const current = j => Object.entries(fingerprints || {}).every(([k,v]) => j.payload.fingerprints?.[k] === v);
-  const dry = jobs.filter(j => ['remote','summer'].includes(j.track) && ['ready','confirmed','applied'].includes(j.state) && j.payload.dryRunComplete === true && current(j) && j.payload.deadline >= today && j.payload.start >= today && verifyBundle(j.payload.bundle, j.payload.fingerprints));
+  const schedulePolicy={applyWithStatedAvailability:fingerprints?.availabilityMode==='declared'};
+  const dry = jobs.filter(j => ['remote','summer'].includes(j.track) && ['ready','confirmed','applied'].includes(j.state) && j.payload.dryRunComplete === true && current(j) && currentSchedule(j.payload,schedulePolicy,today) && verifyBundle(j.payload.bundle, j.payload.fingerprints));
   const tracks = [...new Set(dry.map(j => j.track))];
   const attempts = ledger.db.prepare('SELECT * FROM attempts').all();
   const verified = attempts.filter(a => a.outcome === 'confirmed' && jobs.some(j => j.id === a.job_id && j.state === 'applied' && j.payload.trackerSync?.verified === true));
@@ -22,7 +23,7 @@ export function rolloutStatus(ledger, fingerprints, today = dayInIndia()) {
   for (let i=0;i<7;i++) { cursor.setUTCDate(cursor.getUTCDate()-1); if (!clean.includes(cursor.toISOString().slice(0,10))) break; consecutive++; }
   // Live-start authorization no longer waits for a batch or the other track.
   // Each application still needs its own complete current verified bundle.
-  const dryPassed = dry.length >= 1;
+  const dryPassed = dry.length >= 1 || verified.length > 0;
   let stage = !dryPassed ? 'dry-run' : verified.length < 3 ? 'pilot' : verified.length >= 10 && consecutive >= 7 ? 'expanded' : 'initial';
   const reasons = [];
   if (!dryPassed) reasons.push('One complete, current verified application required');

@@ -5,8 +5,10 @@ import { fetchJdViaKnownApi } from '../browser-extract.mjs';
 import { adapterFor } from './browser.mjs';
 import { fetchUnstopPosting } from './unstop.mjs';
 import { fetchSmartRecruitersPosting } from './smartrecruiters.mjs';
+import { fetchEmployerEmailPosting } from './employer-email.mjs';
 const exec = promisify(execFile);
-export async function fetchFullPosting(url) {
+export async function fetchFullPosting(url,channel) {
+  if(channel){const capture=await fetchEmployerEmailPosting(url,channel);if(!capture)throw new Error('Reviewed employer application page unavailable or changed');return capture;}
   const u = new URL(url);
   if (u.protocol !== 'https:' || (!adapterFor(url) && !['internshala.com','unstop.com','www.unstop.com','jobs.smartrecruiters.com'].includes(u.hostname))) throw new Error('Unsupported discovery source');
   let capture = await fetchSmartRecruitersPosting(url);

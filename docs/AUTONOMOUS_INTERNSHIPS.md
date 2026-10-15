@@ -24,6 +24,21 @@ new candidates or bypasses certification, eligibility, recipient evidence,
 bundle fingerprints, rollout, quotas, duplicate checks, or the runner lock.
 Preparation is required even when live operation is authorized.
 
+For an explicitly approved availability-disclosure policy, add
+`<!-- career-ops:apply-with-stated-availability=true -->` to the trusted
+`modes/_custom.md`. Otherwise the strict schedule policy remains the default.
+With this preference, omitted employer dates, duration, deadlines and hours stay
+unknown; the sealed application states limits from `config/profile.yml` and asks
+whether the employer can accommodate them. Explicit contradictions and the
+country, student, fit and unpaid-quality checks remain enforced.
+
+Email applications may use a reviewed exact employer-owned role URL in the
+private `data/autonomous/email-channels.json` registry. The role page must publish
+the recipient and application instructions explicitly. Bounded HTML capture and
+same-origin redirects are allowed only for reviewed pages; model-proposed or
+guessed addresses do not authorize email. Track first-party role content and the
+recipient quote with a current posting hash.
+
 One current complete verified application unlocks the pilot stage, independently
 of the other track. Three receipt-and-tracker-verified pilots precede five applications/day.
 Ten/day requires ten verified applications and seven consecutive completed clean
@@ -49,6 +64,12 @@ restores no clean-day credit. Ordinary `resume` cannot clear integrity failures.
 Ambiguous or absent evidence stays paused. Form reconciliation is unsupported;
 form adapters remain closed until provider-specific acceptance and recovery are
 certified.
+
+Gmail can rewrite the submitted Message-ID. Confirmed outcomes reconcile by
+their durable accepted Gmail ID. Unknown outcomes can recover a rewritten ID
+only with a unique bounded sent-message match for sender, recipient, subject,
+time, exact body and exact PDF, tied to unchanged durable EML evidence. This
+recovery performs GET requests only; mismatches remain unresolved.
 
 ## Local dashboard and scheduling
 

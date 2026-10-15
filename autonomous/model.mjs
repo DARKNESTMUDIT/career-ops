@@ -7,11 +7,14 @@ export const evaluationSchema = {
   type: 'object', additionalProperties: false,
   properties: Object.fromEntries([
     ...['company','role','track','start','end','deadline','country','duties','pay','reason'].map(k => [k, { type: ['string','null'] }]),
-    ...['hours','fit'].map(k => [k, { type: ['number','null'] }]),
+    ...['hours','fit','durationMonths'].map(k => [k, { type: ['number','null'] }]),
     ...['indiaEligible','studentEligible','remote','credibleEmployer','project','supervision'].map(k => [k, { type: ['boolean','null'] }]),
-    ['evidence', { type: 'object', additionalProperties: false, properties: Object.fromEntries(['company','role','start','end','deadline','country','hours','indiaEligible','studentEligible','remote','duties','pay','fit','credibleEmployer','project','supervision'].map(k => [k, { type: ['string','null'] }])), required: ['company','role','start','end','deadline','country','hours','indiaEligible','studentEligible','remote','duties','pay','fit','credibleEmployer','project','supervision'] }],
+    ['track',{type:['string','null'],enum:['remote','summer',null]}],
+    ['duties',{type:['string','null'],enum:['substantive','excluded',null]}],
+    ['pay',{type:['string','null'],enum:['paid','unpaid','undisclosed',null]}],
+    ['evidence', { type: 'object', additionalProperties: false, properties: Object.fromEntries(['company','role','start','end','deadline','country','hours','durationMonths','indiaEligible','studentEligible','remote','duties','pay','fit','credibleEmployer','project','supervision'].map(k => [k, { type: ['string','null'] }])), required: ['company','role','start','end','deadline','country','hours','durationMonths','indiaEligible','studentEligible','remote','duties','pay','fit','credibleEmployer','project','supervision'] }],
   ]),
-  required: ['company','role','track','start','end','deadline','country','duties','pay','reason','hours','fit','indiaEligible','studentEligible','remote','credibleEmployer','project','supervision','evidence'],
+  required: ['company','role','track','start','end','deadline','country','duties','pay','reason','hours','fit','durationMonths','indiaEligible','studentEligible','remote','credibleEmployer','project','supervision','evidence'],
 };
 
 // Dedicated no-tools planner: auth stays in CODEX_HOME, but plugins/MCP/hooks are

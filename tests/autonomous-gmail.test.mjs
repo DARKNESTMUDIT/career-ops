@@ -68,3 +68,71 @@ test('missing and ambiguous email receipts stay uncertain and cannot be retried'
     assert.throws(()=>fixture.ledger.retry(fixture.id),/Only/);
   }
 });
+
+function rewrittenFixture(t){
+  const fixture=ledgerFixture(t),bundle=path.join(fixture.root,'bundle');fs.mkdirSync(bundle);
+  const subject='Application: Research',body='Synthetic candidate application.\nOnly primary-source facts.',pdf=Buffer.from('%PDF-1.4 synthetic bytes');
+  const createdAt='2026-10-09T12:00:00.000Z',file=path.join(bundle,'application.eml');
+  const raw=applicationMime({...intent,subject,body,pdf,date:new Date(createdAt)});fs.writeFileSync(file,raw);
+  const durable={...intent,subject,createdAt,file,rawHash:hash(raw.toString('base64')),bodyHash:hash(body),pdfHash:hash(pdf.toString('base64'))};
+  fixture.ledger.update(fixture.id,'uncertain',{bundle,emailIntent:durable});
+  const message=(id='rewritten-provider-id')=>({id,internalDate:String(Date.parse(createdAt)+1000),labelIds:['SENT'],payload:{mimeType:'multipart/mixed',headers:[{name:'From',value:intent.from},{name:'To',value:intent.to},{name:'Message-ID',value:'<rewritten@mail.gmail.invalid>'},{name:'Subject',value:`=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`}],parts:[{mimeType:'text/plain',filename:'',body:{data:Buffer.from(body).toString('base64url')}},{mimeType:'application/pdf',filename:'resume.pdf',body:{attachmentId:'synthetic-attachment'}}]}});
+  return {...fixture,durable,body,pdf,message,accessProvider:async()=>({email:intent.from,token:'fixture-token'})};
+}
+function rewrittenTransport(f,{messages=[f.message()],change,attachment=f.pdf,paginated=false}={}){
+  const calls=[];
+  const fetcher=async(url,options)=>{
+    calls.push({url,method:options.method||'GET'});assert.equal(options.method,undefined);
+    const parsed=new URL(url),query=parsed.searchParams.get('q');
+    let result;
+    if(query?.includes('rfc822msgid:'))result={messages:[]};
+    else if(query){assert.equal(parsed.searchParams.get('maxResults'),'10');assert.ok(query.includes('in:sent'));assert.ok(query.includes('after:'));assert.ok(query.includes('before:'));result={messages:messages.map(m=>({id:m.id})),...(paginated?{nextPageToken:'more'}:{})};}
+    else if(parsed.pathname.includes('/attachments/'))result={data:attachment.toString('base64url')};
+    else {const id=parsed.pathname.split('/').at(-1);result=structuredClone(messages.find(m=>m.id===id));if(change)change(result);}
+    return {ok:true,json:async()=>result};
+  };
+  return {fetcher,calls};
+}
+test('known accepted Gmail ID reconciles rewritten Message-ID directly and preserves Applied and durable receipt',async t=>{
+  const f=rewrittenFixture(t),accepted={kind:'gmail-accepted',reference:'rewritten-provider-id',messageId:intent.messageId,at:'2026-10-09T12:00:01.000Z'};
+  f.ledger.receipt(f.id,accepted);f.ledger.update(f.id,'applied',{trackerSync:{verified:true,row:1}});
+  const before=f.ledger.status().attempts,transport=rewrittenTransport(f);
+  const result=await reconcileEmail({...f,...transport});
+  assert.equal(result.confirmed,true);assert.equal(result.receipt.providerMessageId,'<rewritten@mail.gmail.invalid>');assert.equal(result.receipt.messageId,intent.messageId);
+  assert.equal(transport.calls.length,1);assert.ok(!transport.calls[0].url.includes('/messages?'));assert.ok(transport.calls.every(c=>c.method==='GET'));
+  assert.equal(f.ledger.job(f.id).state,'applied');assert.deepEqual(f.ledger.status().attempts,before);
+});
+test('unknown rewritten Gmail ID recovers only a unique exact body and PDF match through bounded GETs',async t=>{
+  const f=rewrittenFixture(t),transport=rewrittenTransport(f);
+  const result=await reconcileEmail({...f,...transport});
+  assert.equal(result.confirmed,true);assert.equal(result.receipt.reference,'rewritten-provider-id');assert.equal(result.receipt.providerMessageId,'<rewritten@mail.gmail.invalid>');
+  assert.equal(result.receipt.at,'2026-10-09T12:00:01.000Z');assert.equal(f.ledger.job(f.id).state,'confirmed');
+  assert.equal(transport.calls.length,4);assert.ok(transport.calls.every(c=>c.method==='GET'));assert.equal(f.ledger.status().attempts.length,1);
+});
+test('rewritten recovery refuses wrong body, wrong PDF, duplicate candidate and pagination without sending',async t=>{
+  for(const variation of ['body','pdf','ambiguous','pagination']){
+    const f=rewrittenFixture(t);
+    const transport=rewrittenTransport(f,{...(variation==='body'?{change:m=>{m.payload.parts[0].body.data=Buffer.from('Wrong body').toString('base64url');}}:{}),...(variation==='pdf'?{attachment:Buffer.from('%PDF-1.4 wrong attachment')}:{}),...(variation==='ambiguous'?{messages:[f.message(),f.message('second-provider-id')]}:{}),paginated:variation==='pagination'});
+    assert.equal((await reconcileEmail({...f,...transport})).confirmed,false,variation);
+    assert.equal(f.ledger.job(f.id).state,'uncertain');assert.equal(f.ledger.status().attempts[0].outcome,'intent');assert.ok(transport.calls.every(c=>c.method==='GET'));
+  }
+});
+test('rewritten recovery refuses altered immutable evidence and legacy intent before fallback search',async t=>{
+  for(const variation of ['raw','legacy','path','createdAt']){
+    const f=rewrittenFixture(t);
+    if(variation==='raw')fs.appendFileSync(f.durable.file,'tamper');
+    if(variation==='legacy')f.ledger.update(f.id,'uncertain',{emailIntent:intent});
+    if(variation==='path')f.ledger.update(f.id,'uncertain',{emailIntent:{...f.durable,file:path.join(f.root,'unrelated.eml')}});
+    if(variation==='createdAt')f.ledger.update(f.id,'uncertain',{emailIntent:{...f.durable,createdAt:'2026-02-30T12:00:00.000Z'}});
+    const transport=rewrittenTransport(f);
+    assert.equal((await reconcileEmail({...f,...transport})).confirmed,false,variation);assert.equal(transport.calls.length,1);
+    assert.equal(f.ledger.job(f.id).state,'uncertain');
+  }
+});
+test('rewritten recovery rejects header duplication, invalid time, wrong labels/subject, malformed base64 and excess MIME parts',async t=>{
+  const changes=[m=>m.payload.headers.push({name:'From',value:intent.from}),m=>m.payload.headers.push({name:'Subject',value:'Application: Research'}),m=>{m.internalDate=String(Date.parse('2026-10-09T12:20:01Z'));},m=>{m.labelIds=[];},m=>{m.payload.headers.find(h=>h.name==='Subject').value='Different role';},m=>{m.payload.parts[0].body.data='%%%';},m=>{m.payload.parts.push(m.payload.parts[0]);},m=>{m.payload.headers.find(h=>h.name==='Message-ID').value='<invalid\r\nheader>';},m=>{m.payload.headers.find(h=>h.name==='Subject').value='=?UTF-8?B?////?=';}];
+  for(const change of changes){
+    const f=rewrittenFixture(t),transport=rewrittenTransport(f,{change});
+    assert.equal((await reconcileEmail({...f,...transport})).confirmed,false);assert.equal(f.ledger.job(f.id).state,'uncertain');assert.ok(transport.calls.every(c=>c.method==='GET'));
+  }
+});

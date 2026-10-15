@@ -20,6 +20,7 @@ source=source.replace("import { authorizeSubmission } from './rollout.mjs';",`fu
 }`);
 source=source.replace("import { gmailAccess } from './gmail-auth.mjs';","const gmailAccess=()=>{throw new Error('Credentials forbidden in transport fixture');};");
 source=source.replace("from './policy.mjs'",`from '${new URL('../autonomous/policy.mjs',import.meta.url).href}'`);
+source=source.replace("from './availability.mjs'",`from '${new URL('../autonomous/availability.mjs',import.meta.url).href}'`);
 source=source.replaceAll('fetcher=fetch',"fetcher=()=>{throw new Error('Network forbidden in transport fixture');}");
 const transport=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
