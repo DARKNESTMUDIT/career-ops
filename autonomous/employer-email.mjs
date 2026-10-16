@@ -1,10 +1,71 @@
 import { isIP } from 'node:net';
 import { htmlToText } from '../providers/_html-to-text.mjs';
+import { decodeEntities } from '../providers/_html-entities.mjs';
 
 const MAX_BYTES = 1024 * 1024;
 const mailbox = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$/;
 const containsMailbox = (text, recipient) => (text.match(/[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}/g) || []).includes(recipient);
 const closedOrChallenge = /\b(?:this (?:job|role|position) (?:is |has been )?(?:closed|filled)|(?:applications?|position|job|role) (?:are |is )?(?:now )?closed|no longer accepting applications|no longer available|verify (?:that )?you are human|captcha|access denied|checking your browser|just a moment)\b/i;
+
+// Capture href-only mailboxes as explicitly labelled source evidence. Never
+// infer a role from the rest of a multi-role careers page: the application's
+// subject must name the reviewed role. JSON preserves decoded body newlines
+// without letting a body manufacture additional evidence lines or headers.
+function applicationMailtoEvidence(html, channel) {
+  const source = html.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<(script|style|template|noscript)\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?<\/\1\s*>/gi, ' ');
+  const role = channel.role.trim().replace(/\s+/g, ' ').toLowerCase();
+  const lines = new Set();
+  let examined = 0;
+  for (const anchor of source.matchAll(/<a\b((?:[^>"']|"[^"]*"|'[^']*')*)>[\s\S]*?<\/a\s*>/gi)) {
+    if (++examined > 200) break;
+    // Parse every attribute so text inside another quoted attribute cannot
+    // masquerade as href. Malformed/unquoted attributes fail closed.
+    const attributes = [];
+    const attributePattern = /\s+([^\s=<>"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/gy;
+    let offset = 0;
+    while (offset < anchor[1].trimEnd().length) {
+      attributePattern.lastIndex = offset;
+      const attribute = attributePattern.exec(anchor[1]);
+      if (!attribute) break;
+      attributes.push([attribute[1].toLowerCase(), attribute[2] ?? attribute[3]]);
+      offset = attributePattern.lastIndex;
+    }
+    if (offset !== anchor[1].trimEnd().length) continue;
+    const hrefs = attributes.filter(([name]) => name === 'href');
+    if (hrefs.length !== 1 || typeof hrefs[0][1] !== 'string') continue;
+    const href = decodeEntities(hrefs[0][1]);
+    if (href.length > 8192 || !/^mailto:/i.test(href) || /[\x00-\x1f\x7f#]/.test(href)) continue;
+    try {
+      const parts = href.slice(7).split('?');
+      if (parts.length !== 2) continue;
+      const recipient = decodeURIComponent(parts[0]);
+      if (recipient !== channel.recipient || !mailbox.test(recipient) || recipient.length > 254 || /[%\s,;<>]/.test(recipient)) continue;
+      const [local, domain] = recipient.split('@');
+      if (local.length > 64 || /^\.|\.$|\.\./.test(local) || !domain.split('.').every(label => /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label))) continue;
+      const fields = new Map();
+      let valid = true;
+      // decodeURIComponent, rather than URLSearchParams, preserves literal +.
+      for (const field of parts[1].split('&')) {
+        const separator = field.indexOf('=');
+        if (separator < 0) { valid = false; break; }
+        const key = decodeURIComponent(field.slice(0, separator)).toLowerCase();
+        const value = decodeURIComponent(field.slice(separator + 1));
+        if (!['subject', 'body'].includes(key) || fields.has(key)) { valid = false; break; }
+        fields.set(key, value);
+      }
+      const subject = fields.get('subject') || '';
+      const body = fields.get('body') || '';
+      if (!valid || /[\x00-\x1f\x7f]/.test(subject) || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(body)) continue;
+      const normalizedSubject = subject.replace(/\s+/g, ' ').toLowerCase();
+      const subjectRole = normalizedSubject.replace(/^(?:application|apply) for /, '').replace(/ (?:position|role)$/, '');
+      if (!/^(?:application|apply) for /.test(normalizedSubject) || subjectRole !== role) continue;
+      const evidence = `Published application mailto: ${JSON.stringify({ recipient, subject, body })}`;
+      if (evidence.length <= 10000) lines.add(evidence);
+      if ([...lines].join('\n').length > 12000) return '';
+    } catch { /* Malformed percent-encoding is not application evidence. */ }
+  }
+  return [...lines].join('\n');
+}
 
 function publicPage(value) {
   try {
@@ -62,7 +123,10 @@ export async function fetchEmployerEmailPosting(url, channel, { fetcher = fetch 
       if (response.url && new URL(response.url).origin !== target.origin) return null;
       const html = await boundedHTML(response);
       if (html === null) return null;
-      const text = htmlToText(html, { maxChars: 50000 });
+      const visible = htmlToText(html, { maxChars: 50000 });
+      if (!visible || visible.length >= 50000) return null;
+      const evidence = applicationMailtoEvidence(html, channel);
+      const text = evidence ? `${visible}\n${evidence}` : visible;
       if (!text || text.length >= 50000 || !text.includes(channel.quote) || !containsMailbox(text, channel.recipient) || !text.toLowerCase().includes(channel.role.trim().replace(/\s+/g, ' ').toLowerCase()) || closedOrChallenge.test(text)) return null;
       return { text, sourceUrl: url, method: 'employer-email-page' };
     }
