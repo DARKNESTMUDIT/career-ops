@@ -83,7 +83,7 @@ async function fixture(t) {
 
 test('real Gmail authorization sends once, canonical TSV/status synchronization and replay preserve one application',async t=>{
   assertProductionAdapters();
-  assert.deepEqual(certified.ADAPTER_VALIDATION,{greenhouse:false,lever:false,ashby:false,gmail:true});
+  assert.deepEqual(certified.ADAPTER_VALIDATION,{greenhouse:false,lever:false,ashby:false,gmail:true,michmer:true});
   const f=await fixture(t);let posts=0;
   const receipt=await gmail.sendApplicationEmail({...f,fetcher:async(url,options)=>{
     posts++;assert.equal(options.method,'POST');assert.ok(url.endsWith('/messages/send'));

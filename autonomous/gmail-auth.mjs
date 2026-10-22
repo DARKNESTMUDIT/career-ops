@@ -38,6 +38,18 @@ export async function connectGmail({root,clientPath,email,onAuthorize,store=keyc
   const parsed=JSON.parse(fs.readFileSync(clientPath,'utf8'));
   const client=parsed.installed;
   if(!client)throw new Error('Choose OAuth client type Desktop app, not Web application');
+  return authorizeClient({root,client,email,onAuthorize,store,fetcher,timeoutMs});
+}
+
+export async function reconnectGmail({root,email,onAuthorize,store=keychain,fetcher=fetch,timeoutMs=300000}) {
+  const record=await store(root,'get');
+  if(typeof record?.email!=='string' || typeof email!=='string' || !email.trim() || record.email.toLowerCase()!==email.toLowerCase())throw new Error('Stored Gmail does not match the approved sender');
+  if(typeof record.client_id!=='string' || !record.client_id.endsWith('.apps.googleusercontent.com') || typeof record.client_secret!=='string' || !record.client_secret)throw new Error('Stored OAuth Desktop client is missing; connect Gmail with the existing client JSON');
+  const client={client_id:record.client_id,client_secret:record.client_secret};
+  return authorizeClient({root,client,email,onAuthorize,store,fetcher,timeoutMs});
+}
+
+async function authorizeClient({root,client,email,onAuthorize,store,fetcher,timeoutMs}) {
   const state=randomBytes(32).toString('base64url'),verifier=randomBytes(48).toString('base64url');
   let done;
   const codePromise=new Promise((resolve,reject)=>{done={resolve,reject};});

@@ -11,10 +11,8 @@ const closedOrChallenge = /\b(?:this (?:job|role|position) (?:is |has been )?(?:
 // infer a role from the rest of a multi-role careers page: the application's
 // subject must name the reviewed role. JSON preserves decoded body newlines
 // without letting a body manufacture additional evidence lines or headers.
-function applicationMailtoEvidence(html, channel) {
+function* anchorHrefs(html) {
   const source = html.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<(script|style|template|noscript)\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?<\/\1\s*>/gi, ' ');
-  const role = channel.role.trim().replace(/\s+/g, ' ').toLowerCase();
-  const lines = new Set();
   let examined = 0;
   for (const anchor of source.matchAll(/<a\b((?:[^>"']|"[^"]*"|'[^']*')*)>[\s\S]*?<\/a\s*>/gi)) {
     if (++examined > 200) break;
@@ -33,7 +31,14 @@ function applicationMailtoEvidence(html, channel) {
     if (offset !== anchor[1].trimEnd().length) continue;
     const hrefs = attributes.filter(([name]) => name === 'href');
     if (hrefs.length !== 1 || typeof hrefs[0][1] !== 'string') continue;
-    const href = decodeEntities(hrefs[0][1]);
+    yield decodeEntities(hrefs[0][1]);
+  }
+}
+
+function applicationMailtoEvidence(html, channel) {
+  const role = channel.role.trim().replace(/\s+/g, ' ').toLowerCase();
+  const lines = new Set();
+  for (const href of anchorHrefs(html)) {
     if (href.length > 8192 || !/^mailto:/i.test(href) || /[\x00-\x1f\x7f#]/.test(href)) continue;
     try {
       const parts = href.slice(7).split('?');
@@ -97,39 +102,64 @@ async function boundedHTML(response) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-// Only a locally reviewed, role-specific email channel authorizes this fetch.
-// Its previous postingHash is intentionally not consulted: a changed page must
-// be capturable so the later draft/send boundary can detect stale approval.
+async function capturePage(target, channel, signal, fetcher) {
+  let current = target;
+  for (let redirects = 0; redirects <= 2; redirects++) {
+    const response = await fetcher(current.href, { redirect: 'manual', signal, headers: { Accept: 'text/html' } });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      await response.body?.cancel();
+      const location = response.headers.get('location');
+      if (!location || redirects === 2) return null;
+      const next = publicPage(new URL(location, current).href);
+      if (!next || next.origin !== target.origin) return null;
+      current = next;
+      continue;
+    }
+    if (response.status !== 200 || !/^text\/html(?:\s*;|\s*$)/i.test(response.headers.get('content-type') || '')) { await response.body?.cancel(); return null; }
+    // Defend against a nonconforming fetcher following a redirect itself.
+    if (response.url && new URL(response.url).origin !== target.origin) { await response.body?.cancel(); return null; }
+    const html = await boundedHTML(response);
+    if (html === null) return null;
+    const visible = htmlToText(html, { maxChars: 50000 });
+    if (!visible || visible.length >= 50000) return null;
+    const evidence = applicationMailtoEvidence(html, channel);
+    const text = evidence ? `${visible}\n${evidence}` : visible;
+    if (text.length >= 50000 || !text.toLowerCase().includes(channel.role.trim().replace(/\s+/g, ' ').toLowerCase()) || closedOrChallenge.test(text)) return null;
+    return {html,text,url:current};
+  }
+  return null;
+}
+
+// Only a locally reviewed, role-specific email channel authorizes these fetches.
+// A separate application page must be explicitly linked from the current JD;
+// neither a guessed URL nor script text supplies that relationship.
+// The old postingHash is intentionally not consulted so changed evidence can
+// reach the later draft/send boundary, where stale approval is rejected.
 export async function fetchEmployerEmailPosting(url, channel, { fetcher = fetch } = {}) {
-  const target = publicPage(url);
-  if (!target || channel?.verified !== true || channel.roleUrl !== url || channel.sourceUrl !== url || channel.employerHost !== target.hostname) return null;
+  const target = publicPage(url), applicationTarget = publicPage(channel?.sourceUrl);
+  if (!target || !applicationTarget || channel?.verified !== true || channel.roleUrl !== url || applicationTarget.origin !== target.origin || channel.employerHost !== target.hostname) return null;
   if (typeof channel.recipient !== 'string' || !mailbox.test(channel.recipient) || typeof channel.quote !== 'string' || !channel.quote.trim() || !containsMailbox(channel.quote, channel.recipient) || typeof channel.role !== 'string' || !channel.role.trim()) return null;
   const signal = AbortSignal.timeout(15000);
-  let current = target;
   try {
-    for (let redirects = 0; redirects <= 2; redirects++) {
-      const response = await fetcher(current.href, { redirect: 'manual', signal, headers: { Accept: 'text/html' } });
-      if ([301, 302, 303, 307, 308].includes(response.status)) {
-        await response.body?.cancel();
-        const location = response.headers.get('location');
-        if (!location || redirects === 2) return null;
-        const next = publicPage(new URL(location, current).href);
-        if (!next || next.origin !== target.origin) return null;
-        current = next;
-        continue;
+    const posting = await capturePage(target, channel, signal, fetcher);
+    if (!posting) return null;
+    let application = posting;
+    const linked = channel.sourceUrl !== url;
+    if (linked) {
+      let actualLink = false;
+      for (const href of anchorHrefs(posting.html)) {
+        if (href.length > 8192 || /[\x00-\x1f\x7f]/.test(href)) continue;
+        try {
+          if (new URL(href,posting.url).href === channel.sourceUrl) { actualLink = true; break; }
+        } catch { /* Malformed hrefs never establish the application link. */ }
       }
-      if (response.status !== 200 || !/^text\/html(?:\s*;|\s*$)/i.test(response.headers.get('content-type') || '')) { await response.body?.cancel(); return null; }
-      // Defend against a nonconforming fetcher following a redirect itself.
-      if (response.url && new URL(response.url).origin !== target.origin) return null;
-      const html = await boundedHTML(response);
-      if (html === null) return null;
-      const visible = htmlToText(html, { maxChars: 50000 });
-      if (!visible || visible.length >= 50000) return null;
-      const evidence = applicationMailtoEvidence(html, channel);
-      const text = evidence ? `${visible}\n${evidence}` : visible;
-      if (!text || text.length >= 50000 || !text.includes(channel.quote) || !containsMailbox(text, channel.recipient) || !text.toLowerCase().includes(channel.role.trim().replace(/\s+/g, ' ').toLowerCase()) || closedOrChallenge.test(text)) return null;
-      return { text, sourceUrl: url, method: 'employer-email-page' };
+      if (!actualLink) return null;
+      application = await capturePage(applicationTarget, channel, signal, fetcher);
+      if (!application) return null;
     }
+    if (!application.text.includes(channel.quote) || !containsMailbox(application.text, channel.recipient)) return null;
+    const text = linked ? `${posting.text}\nApplication page source: ${channel.sourceUrl}\n${application.text}` : posting.text;
+    if (text.length >= 50000) return null;
+    return {text,sourceUrl:url,method:'employer-email-page'};
   } catch { return null; }
-  return null;
 }

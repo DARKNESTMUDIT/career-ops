@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeUrl } from '../url-key.mjs';
-import { identityKey, dayInIndia } from './policy.mjs';
+import { identityKey, dayInIndia, currentSchedule } from './policy.mjs';
+import { verifyBundle } from './bundle.mjs';
 
 export class Ledger {
   constructor(root) {
@@ -77,13 +78,21 @@ export class Ledger {
     return this.transaction(() => {
       if (this.get('paused')) throw new Error('Runner is paused');
       if (this.get('integrityFailure')) throw new Error('Integrity failure requires resolution');
-      if (!['pilot', 'initial', 'expanded'].includes(this.get('stage'))) throw new Error('Dry-run rollout gate');
+      const stage = this.get('stage');
+      if (!['pilot', 'initial', 'expanded', 'full-scale'].includes(stage)) throw new Error('Dry-run rollout gate');
       const j = this.job(id);
       if (j?.state !== 'ready' || JSON.stringify(j.payload.fingerprints) !== JSON.stringify(fingerprints)) throw new Error('Stale or unready application');
-      const ceiling = this.get('stage') === 'pilot' ? 3 : this.get('stage') === 'initial' ? 5 : 10;
-      if (!Number.isInteger(limit) || limit < 1) throw new Error('Invalid daily limit');
-      if (this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE day=?').get(today).n >= Math.min(limit,ceiling)) throw new Error('Daily limit reached');
-      if (this.get('stage') === 'pilot' && this.db.prepare('SELECT COUNT(*) AS n FROM attempts').get().n >= Math.min(pilotLimit,3)) throw new Error('Pilot limit reached');
+      if (stage === 'full-scale') {
+        if (fingerprints?.fullScaleApplications !== true || limit !== null) throw new Error('Full-scale requires explicit policy and null daily limit');
+        if (!this.ownsLock()) throw new Error('Submission requires the active runner lock');
+        if (j.payload.dryRunComplete !== true || !verifyBundle(j.payload.bundle, fingerprints)) throw new Error('Incomplete or changed bundle');
+        if (!currentSchedule(j.payload, {applyWithStatedAvailability:fingerprints.availabilityMode === 'declared'}, today)) throw new Error('Application schedule changed or expired');
+      } else {
+        const ceiling = stage === 'pilot' ? 3 : stage === 'initial' ? 5 : 10;
+        if (!Number.isInteger(limit) || limit < 1) throw new Error('Invalid daily limit');
+        if (this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE day=?').get(today).n >= Math.min(limit,ceiling)) throw new Error('Daily limit reached');
+        if (stage === 'pilot' && this.db.prepare('SELECT COUNT(*) AS n FROM attempts').get().n >= Math.min(pilotLimit,3)) throw new Error('Pilot limit reached');
+      }
       if (this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('submitting','uncertain')").get().n) throw new Error('Unresolved submission requires reconciliation');
       const attempt = randomUUID();
       // A previously clean day is provisional until all its later actions also

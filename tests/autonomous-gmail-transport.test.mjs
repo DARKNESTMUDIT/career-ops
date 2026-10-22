@@ -38,8 +38,8 @@ function fixture(t) {
   ledger.update(id,'ready',job);ledger.set('stage','pilot');ledger.set('syntheticTransportFixture',true);
   return {root,ledger,id,context,channel,accessProvider:async()=>({email:context.profile.candidate.email,token:'synthetic-token'})};
 }
-test('transport harness leaves form adapters closed and changes no production validation',()=>{
-  assert.deepEqual(ADAPTER_VALIDATION,{greenhouse:false,lever:false,ashby:false,gmail:true});
+test('transport harness leaves uncertified ATS adapters closed and changes no production validation',()=>{
+  assert.deepEqual(ADAPTER_VALIDATION,{greenhouse:false,lever:false,ashby:false,gmail:true,michmer:true});
 });
 test('accepted send records immutable intent before exactly one POST and confirms one attempt',async t=>{
   const f=fixture(t);let posts=0;

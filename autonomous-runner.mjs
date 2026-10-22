@@ -2,7 +2,7 @@
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { Ledger } from './autonomous/ledger.mjs';
 import { run, loadContext } from './autonomous/runner.mjs';
-import { connectGmail, gmailAccess } from './autonomous/gmail-auth.mjs';
+import { connectGmail, reconnectGmail, gmailAccess } from './autonomous/gmail-auth.mjs';
 import { retryTrackerSync } from './autonomous/tracker.mjs';
 import { reconcileEmail } from './autonomous/gmail.mjs';
 import { resolveIntegrityPause } from './autonomous/recovery.mjs';
@@ -11,6 +11,7 @@ import { isMainModule } from './lib/is-main-module.mjs';
 import { fileURLToPath } from 'node:url';
 import { boundedProcess } from './autonomous/process.mjs';
 import { discoverFresh } from './autonomous/scan.mjs';
+import { reconcileMichmerForm } from './autonomous/michmer-form.mjs';
 export async function main() {
 const args = process.argv.slice(2), operation = args[0] || 'status';
 try {
@@ -18,8 +19,9 @@ try {
   if (operation === 'run') {
     const ti = args.indexOf('--track');
     const ji = args.indexOf('--job');
+    const mi = args.indexOf('--max-evaluations');
     if(args.includes('--worker')) {
-      console.log(JSON.stringify(await run({ root, track: ti < 0 ? 'all' : args[ti+1], dryRun: !args.includes('--live'), discover:args.includes('--discover') ? discoverFresh : undefined, jobIds:ji<0?undefined:[args[ji+1]] })));
+      console.log(JSON.stringify(await run({ root, track: ti < 0 ? 'all' : args[ti+1], dryRun: !args.includes('--live'), discover:args.includes('--discover') ? discoverFresh : undefined, jobIds:ji<0?undefined:[args[ji+1]], maxEvaluations:mi<0?30:Number(args[mi+1]) })));
     } else {
       try {
         const result=await boundedProcess(process.execPath,[fileURLToPath(import.meta.url),...args,'--worker'],{env:{...process.env,CAREER_OPS_ROOT:root},timeoutMs:3600000});
@@ -35,11 +37,12 @@ try {
     const ledger=new Ledger(root);let token;
     try {token=ledger.acquire();console.log(JSON.stringify(await discoverFresh(root,ledger)));}
     finally {if(token)ledger.release(token);ledger.close();}
-  } else if (operation === 'gmail-connect') {
+  } else if (operation === 'gmail-connect' || operation === 'gmail-reconnect') {
     const clientPath=args[1];
-    if(!clientPath)throw new Error('Usage: gmail-connect /absolute/path/to/desktop-client.json');
+    if(operation==='gmail-connect' && !clientPath)throw new Error('Usage: gmail-connect /absolute/path/to/desktop-client.json');
     const {profile}=loadContext(root);
-    const result=await connectGmail({root,clientPath,email:profile.candidate.email,onAuthorize:async url=>console.log(JSON.stringify({authorizationUrl:url,instruction:'Open in your signed-in browser; approve Gmail send and read-only access.'}))});
+    const connectionOptions={root,clientPath,email:profile.candidate.email,timeoutMs:3600000,onAuthorize:async url=>console.log(JSON.stringify({authorizationUrl:url,instruction:'Open in your signed-in browser; renew the existing Gmail send and read-only access.'}))};
+    const result=await (operation==='gmail-reconnect'?reconnectGmail(connectionOptions):connectGmail(connectionOptions));
     const ledger=new Ledger(root); try {ledger.set('gmailConnection',{...result,verifiedAt:new Date().toISOString()});}finally{ledger.close();}
     console.log(JSON.stringify(result));
   } else if (operation === 'gmail-status') {
@@ -54,6 +57,10 @@ try {
   } else if (operation === 'gmail-reconcile') {
     const ledger=new Ledger(root); let token;
     try {token=ledger.acquire();console.log(JSON.stringify(await reconcileEmail({root,ledger,id:args[1]})));}
+    finally {if(token)ledger.release(token);ledger.close();}
+  } else if (operation === 'form-reconcile') {
+    const ledger=new Ledger(root);let token;
+    try {token=ledger.acquire();console.log(JSON.stringify(await reconcileMichmerForm({ledger,id:args[1]})));}
     finally {if(token)ledger.release(token);ledger.close();}
   } else if (operation === 'recover') {
     const ledger=new Ledger(root); let token;
@@ -70,7 +77,7 @@ try {
       else if (operation === 'resume') ledger.resume();
       else if (operation === 'retry') ledger.retry(args[1]);
       else if (operation === 'add') ledger.add(args[1]);
-      else if (operation !== 'status') throw new Error('Use run [--dry-run] [--track all|remote|summer], discover, status, pause, resume, recover, sync, gmail-status, gmail-connect CLIENT, gmail-reconcile ID, retry ID, or add URL');
+      else if (operation !== 'status') throw new Error('Use run [--dry-run|--live] [--track all|remote|summer] [--max-evaluations 1..30], discover, status, pause, resume, recover, sync, gmail-status, gmail-connect CLIENT, gmail-reconnect, gmail-reconcile ID, form-reconcile ID, retry ID, or add URL');
       const result=ledger.status();
       if(operation==='status') {
         try {result.rollout=rolloutStatus(ledger,loadContext(root).fingerprints);}

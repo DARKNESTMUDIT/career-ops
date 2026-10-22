@@ -3,10 +3,12 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { hash } from './policy.mjs';
 import { authorizeSubmission } from './rollout.mjs';
+import { inspectLeverForm } from './form-receipts.mjs';
 
 export function adapterFor(url) {
   const u = new URL(url);
-  if (u.protocol !== 'https:') return null;
+  if (u.protocol !== 'https:' || u.username || u.password || u.port) return null;
+  if (u.hostname === 'michmer.in' && u.pathname === '/careers' && !u.search && (!u.hash || u.hash === '#product-management')) return 'michmer';
   if (/^(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io$/.test(u.hostname)) return 'greenhouse';
   if (/^jobs(?:\.eu)?\.lever\.co$/.test(u.hostname)) return 'lever';
   if (u.hostname === 'jobs.ashbyhq.com') return 'ashby';
@@ -43,7 +45,10 @@ export async function snapshotFields(page) {
 export async function prepareForm(page, profile, resumePath) {
   const text = await page.locator('body').innerText();
   if (/verify you are human|captcha challenge|sign in to apply|log in to apply|two.factor authentication/i.test(text)) throw new Error('Login, MFA or CAPTCHA requires interaction');
+  let providerContract;
+  if (adapterFor(page.url()) === 'lever') providerContract = await inspectLeverForm(page,page.url());
   const fields = await snapshotFields(page), answers = [], issues = [];
+  if (providerContract?.captchaPresent && !providerContract.captchaReady) issues.push('Lever CAPTCHA requires user interaction; never bypassed');
   if (!fields.length) throw new Error('No supported form fields found');
   let uploaded = false;
   for (const field of fields) {
@@ -74,7 +79,7 @@ export async function prepareForm(page, profile, resumePath) {
   if (page.frames().some(frame => frame !== page.mainFrame() && !/recaptcha|hcaptcha/.test(frame.url()))) issues.push('Embedded form requires a supported frame adapter');
   const submit = page.getByRole('button', {name:/^(submit application|submit|send application)$/i});
   if (await submit.count() !== 1 || !(await submit.isVisible()) || !(await submit.isEnabled())) issues.push('Final submission control unavailable or ambiguous');
-  return { answers, issues, complete: issues.length === 0, resumeHash: hash(fs.readFileSync(resumePath).toString('base64')) };
+  return { ...(providerContract ? {providerContract} : {}), answers, issues, complete: issues.length === 0, resumeHash: hash(fs.readFileSync(resumePath).toString('base64')) };
 }
 
 export async function uploadedHash(loc) {
@@ -126,7 +131,7 @@ export async function openForm(page, url) {
 export async function submitPrepared(page, { ledger, id, context, prepared, resumePath, bundle, limit }) {
   // Every caller, including direct helper users, must pass the rollout gate.
   // Do this before touching the page or reserving an external action.
-  const authorization = authorizeSubmission(ledger, id, context.fingerprints, adapterFor(ledger.job(id)?.url));
+  authorizeSubmission(ledger, id, context.fingerprints, adapterFor(ledger.job(id)?.url));
   if (!prepared.complete || hash(fs.readFileSync(resumePath).toString('base64')) !== prepared.resumeHash) throw new Error('Unverified or changed resume');
   const job = ledger.job(id);
   if (path.resolve(bundle) !== path.resolve(job.payload.bundle) || path.resolve(resumePath) !== path.resolve(bundle,'resume.pdf')) throw new Error('Submission bundle mismatch');
@@ -141,20 +146,11 @@ export async function submitPrepared(page, { ledger, id, context, prepared, resu
     if (actual?.trim() !== a.value.trim()) throw new Error(`Application changed: ${a.label}`);
     if (a.type === 'file' && await uploadedHash(loc) !== a.fileHash) throw new Error('Uploaded resume content changed');
   }
-  const before = await page.locator('body').innerText();
-  const success = /application (?:has been )?(?:submitted|received)|thank you for applying|thanks for applying/i;
-  if (success.test(before)) throw new Error('Existing confirmation requires duplicate reconciliation');
-  const button = page.getByRole('button', {name:/^(submit application|submit|send application)$/i});
-  if (await button.count() !== 1) throw new Error('Final submit control is ambiguous');
-  ledger.reserve(id, {limit:Math.min(limit ?? authorization.limit, authorization.limit), fingerprints:job.payload.fingerprints});
-  try {
-    if (ledger.get('paused')) throw new Error('Paused after intent; reconcile before retry');
-    await button.click({timeout:15000});
-    await page.waitForFunction(() => /application (?:has been )?(?:submitted|received)|thank you for applying|thanks for applying/i.test(document.body.innerText), null, {timeout:20000});
-    const screenshot = path.join(bundle,'receipt.png'); await page.screenshot({path:screenshot,fullPage:true});
-    const receipt = {kind:'form-confirmation',reference:screenshot,url:page.url(),at:new Date().toISOString(),text:(await page.locator('body').innerText()).slice(0,4000)};
-    ledger.receipt(id,receipt); return receipt;
-  } catch (e) { ledger.update(id,'uncertain',{reasons:[`Submission outcome requires reconciliation: ${e.message}`]}); throw e; }
+  // A generic thank-you string is not evidence that this job accepted this
+  // candidate. The hosted Lever POST/receipt contract is not documented by its
+  // employer-key API, and Greenhouse/Ashby have no certified contract here.
+  // Keep preparation available, but fail before durable intent or any click.
+  throw new Error(`Provider-specific hosted acceptance and GET-only reconciliation validation pending: ${adapterFor(job.url)}`);
 }
 
 export async function validatePreparedForm(page, prepared) {

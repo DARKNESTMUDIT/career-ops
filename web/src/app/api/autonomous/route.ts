@@ -26,11 +26,11 @@ export async function POST(req: Request) {
   const blocked = guard(req); if (blocked) return blocked;
   try {
     const { action, id, track = "all" } = await req.json();
-    if (!["run", "pause", "resume", "retry"].includes(action) || !["all", "remote", "summer"].includes(track)) return Response.json({ error: "Invalid operation" }, { status: 400 });
+    if (!["run", "live", "pause", "resume", "retry"].includes(action) || !["all", "remote", "summer"].includes(track)) return Response.json({ error: "Invalid operation" }, { status: 400 });
     if (action === "retry" && (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id))) return Response.json({ error: "Invalid application ID" }, { status: 400 });
     const { cwd, script, env } = invocation();
-    if (action === "run") {
-      const child = spawn(process.execPath, [script, "run", "--dry-run", "--track", track], { cwd, env, detached: true, stdio: "ignore" });
+    if (action === "run" || action === "live") {
+      const child = spawn(process.execPath, [script, "run", action === "live" ? "--live" : "--dry-run", "--track", track], { cwd, env, detached: true, stdio: "ignore" });
       await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
       child.unref();
       return Response.json({ accepted: true }, { status: 202 });

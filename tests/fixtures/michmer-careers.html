@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Synthetic employer form fixture</title>
+<style>.hide { display: none; }</style></head>
+<body>
+<!-- Original synthetic markup and handler; no vendor page content copied. -->
+<details id="product-management" open>
+  <summary>Product Management Intern</summary>
+  <p>Synthetic test role. A fixture team practices product research, writes clear requirements,
+     and discusses small experiments. This description exists only to exercise exact role
+     capture and does not describe any real employer's internship or candidate eligibility.</p>
+</details>
+<form id="applyForm" novalidate>
+  <label>Role<select id="role" name="role" required>
+    <option value="">Choose</option><option value="product-management">Product Management Intern</option>
+    <option value="software-development">Software Development Intern</option>
+  </select></label>
+  <label>City<select id="city" name="city" required>
+    <option value="">Choose</option><option>Pune</option><option>Mumbai</option><option>Delhi</option>
+    <option>Chennai</option><option>Trivandrum</option><option>Kochi</option><option value="Other">Other</option>
+  </select></label>
+  <label id="cityOtherField" class="hide">Other city<input id="cityOther" name="cityOther"></label>
+  <label>Name<input id="name" name="name" required></label>
+  <label>Email<input id="email" name="email" type="email" required></label>
+  <label>Links<input id="links" name="links"></label>
+  <label>PDF<input id="resume" name="resume" type="file" accept="application/pdf" required></label>
+  <label class="hide">Leave empty<input id="website" name="website"></label>
+  <div id="msg" role="status"></div>
+  <button id="submitBtn" type="submit">Submit application</button>
+</form>
+<footer>Synthetic fixture. All requests are intercepted by tests.</footer>
+<script>
+const fixtureForm = document.getElementById('applyForm');
+const fixtureCity = document.getElementById('city');
+const fixtureLoadedAt = Date.now();
+fixtureCity.addEventListener('change', () => {
+  document.getElementById('cityOtherField').classList.toggle('hide', fixtureCity.value !== 'Other');
+  if (fixtureCity.value !== 'Other') document.getElementById('cityOther').value = '';
+});
+fixtureForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = document.getElementById('submitBtn');
+  const message = document.getElementById('msg');
+  message.className = '';
+  const data = new FormData();
+  for (const field of ['role', 'city', 'name', 'email', 'cityOther', 'links', 'website']) {
+    data.append(field, document.getElementById(field).value);
+  }
+  const file = document.getElementById('resume').files[0];
+  data.append('resumeName', file.name);
+  data.append('t', String(fixtureLoadedAt));
+  data.append('resume', file);
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/apply', { method: 'POST', body: data });
+    await response.json().catch(() => ({}));
+    if (response.ok) {
+      fixtureForm.querySelectorAll('input, select').forEach(input => { input.value = ''; });
+      message.className = 'msg ok';
+      message.textContent = 'Application received. If your profile fits, we will email you from contact@michmer.in.';
+      button.style.display = 'none';
+    } else {
+      message.className = 'msg err';
+      message.textContent = 'Synthetic rejection';
+      button.disabled = false;
+    }
+  } catch {
+    message.className = 'msg err';
+    message.textContent = 'Synthetic network failure';
+    button.disabled = false;
+  }
+});
+</script>
+</body></html>

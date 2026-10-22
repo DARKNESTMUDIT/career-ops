@@ -6,9 +6,16 @@ import { adapterFor } from './browser.mjs';
 import { fetchUnstopPosting } from './unstop.mjs';
 import { fetchSmartRecruitersPosting } from './smartrecruiters.mjs';
 import { fetchEmployerEmailPosting } from './employer-email.mjs';
+import { fetchMichmerPosting } from './michmer-form.mjs';
+import { fetchInternshalaPosting } from './internshala.mjs';
 const exec = promisify(execFile);
 export async function fetchFullPosting(url,channel) {
   if(channel){const capture=await fetchEmployerEmailPosting(url,channel);if(!capture)throw new Error('Reviewed employer application page unavailable or changed');return capture;}
+  if(adapterFor(url)==='michmer')return fetchMichmerPosting(url);
+  if(new URL(url).hostname==='internshala.com') {
+    const structured=await fetchInternshalaPosting(url);
+    if(structured)return structured;
+  }
   const u = new URL(url);
   if (u.protocol !== 'https:' || (!adapterFor(url) && !['internshala.com','unstop.com','www.unstop.com','jobs.smartrecruiters.com'].includes(u.hostname))) throw new Error('Unsupported discovery source');
   let capture = await fetchSmartRecruitersPosting(url);

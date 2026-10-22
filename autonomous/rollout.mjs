@@ -5,7 +5,7 @@ import { verifyBundle } from './bundle.mjs';
 // Gmail dispatch/reconciliation, canonical tracker sync and integrity recovery
 // are certified by autonomous-gmail-integration.test.mjs. Form acceptance and
 // reconciliation remain uncertified; no stage counter can enable them.
-export const ADAPTER_VALIDATION = Object.freeze({ greenhouse:false, lever:false, ashby:false, gmail:true });
+export const ADAPTER_VALIDATION = Object.freeze({ greenhouse:false, lever:false, ashby:false, gmail:true, michmer:true });
 export function rolloutStatus(ledger, fingerprints, today = dayInIndia()) {
   const jobs = ledger.jobs();
   const current = j => Object.entries(fingerprints || {}).every(([k,v]) => j.payload.fingerprints?.[k] === v);
@@ -24,13 +24,14 @@ export function rolloutStatus(ledger, fingerprints, today = dayInIndia()) {
   // Live-start authorization no longer waits for a batch or the other track.
   // Each application still needs its own complete current verified bundle.
   const dryPassed = dry.length >= 1 || verified.length > 0;
-  let stage = !dryPassed ? 'dry-run' : verified.length < 3 ? 'pilot' : verified.length >= 10 && consecutive >= 7 ? 'expanded' : 'initial';
+  let stage = !dryPassed ? 'dry-run' : fingerprints?.fullScaleApplications === true ? 'full-scale' : verified.length < 3 ? 'pilot' : verified.length >= 10 && consecutive >= 7 ? 'expanded' : 'initial';
   const reasons = [];
   if (!dryPassed) reasons.push('One complete, current verified application required');
   if (unresolved) reasons.push('Submission outcome needs reconciliation');
   if (ledger.get('integrityFailure')) reasons.push('Integrity failure requires resolution');
   if (ledger.get('paused')) reasons.push('Runner is paused');
-  const limit = stage === 'dry-run' ? 0 : stage === 'pilot' ? 3 : stage === 'initial' ? 5 : 10;
+  // null is an explicit absence of a daily quota, and survives JSON storage.
+  const limit = stage === 'full-scale' ? null : stage === 'dry-run' ? 0 : stage === 'pilot' ? 3 : stage === 'initial' ? 5 : 10;
   return { stage, limit, completeDryRuns:dry.length, tracks, verifiedApplications:verified.length, consecutiveCleanDays:consecutive, unresolved, reasons, adapterValidation:ADAPTER_VALIDATION, todayAttempts:attempts.filter(a=>a.day===today).length, totalAttempts:attempts.length };
 }
 
@@ -40,7 +41,7 @@ export function authorizeSubmission(ledger, id, fingerprints, adapter, today = d
   if (!ledger.ownsLock()) throw new Error('Submission requires the active runner lock');
   if (state.reasons.length) throw new Error(state.reasons.join('; '));
   if (state.stage === 'pilot' && state.totalAttempts >= 3) throw new Error('Pilot receipts and tracker rows must be verified');
-  if (state.todayAttempts >= state.limit) throw new Error('Daily submission limit reached');
+  if (state.limit !== null && state.todayAttempts >= state.limit) throw new Error('Daily submission limit reached');
   const job = ledger.job(id);
   if (job?.state !== 'ready' || !verifyBundle(job.payload.bundle, job.payload.fingerprints)) throw new Error('Incomplete or changed bundle');
   if (!Object.entries(fingerprints || {}).every(([k,v])=>job.payload.fingerprints?.[k]===v)) throw new Error('Candidate or policy changed');
@@ -67,10 +68,10 @@ export function recordOperatingDay(ledger, today = dayInIndia()) {
   ledger.set('cleanDays',[...new Set([...(ledger.get('cleanDays') || []),today])].sort().slice(-60));
 }
 
-export function pendingWork(jobs) {
+export function pendingWork(jobs, rankFresh = jobs=>jobs) {
   // Alternate new/preparation work with freshness checks. A full queue of
   // current bundles must not consume every capture slot on every run.
-  const fresh=prioritize(jobs.filter(j=>j.state!=='ready'));
+  const fresh=rankFresh(prioritize(jobs.filter(j=>j.state!=='ready')));
   const ready=prioritize(jobs.filter(j=>j.state==='ready'));
   const ordered=[];
   while(fresh.length || ready.length) {

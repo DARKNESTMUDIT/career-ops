@@ -110,3 +110,84 @@ test('appended evidence remains bound to current quote and total posting cap', a
     assert.equal(await fetchEmployerEmailPosting(url, mailtoChannel, { fetcher: async () => page(body) }), null);
   }
 });
+
+const applicationUrl = `${url}/apply/`;
+const linkedChannel = {...channel, sourceUrl:applicationUrl};
+const linkedJD = `<h1>Product Intern</h1><p>Remote India, current students eligible. Research customers and product strategy.</p><a href="${applicationUrl}">Apply for this role</a>`;
+const linkedApplication = `<h1>Apply: Product Intern</h1><noscript><p>The application form needs JavaScript. ${quote}</p></noscript>`;
+const linkedFetcher = (jd=linkedJD,application=linkedApplication,calls=[])=>async target=>{calls.push(target);return page(target===url?jd:application);};
+
+test('reviewed linked employer application page preserves full JD and labelled recipient evidence',async()=>{
+  const calls=[];
+  const result=await fetchEmployerEmailPosting(url,linkedChannel,{fetcher:linkedFetcher(linkedJD,linkedApplication,calls)});
+  assert.deepEqual(calls,[url,applicationUrl]);
+  assert.equal(result.sourceUrl,url);assert.equal(result.method,'employer-email-page');
+  assert.equal(result.text,`Product Intern Remote India, current students eligible. Research customers and product strategy. Apply for this role\nApplication page source: ${applicationUrl}\nApply: Product Intern The application form needs JavaScript. ${quote}`);
+});
+
+test('linked application URLs require a real exact anchor on the role page',async()=>{
+  const anchor=`<a href="${applicationUrl}">Apply</a>`;
+  for(const content of [
+    `Apply at ${applicationUrl}`,
+    `<script>${anchor}</script>`,
+    `<!-- ${anchor} -->`,
+    `<template>${anchor}</template>`,
+    `<noscript>${anchor}</noscript>`,
+    `<a href="${applicationUrl}different">Apply</a>`,
+    `<a href="${applicationUrl}#fragment">Apply</a>`,
+    `<a href="${applicationUrl}" href="https://other.com/">Apply</a>`,
+    `<a title=' href="${applicationUrl}"'>Apply</a>`,
+  ]) {
+    const calls=[];
+    const result=await fetchEmployerEmailPosting(url,linkedChannel,{fetcher:linkedFetcher(`<h1>Product Intern</h1>${content}`,linkedApplication,calls)});
+    assert.equal(result,null,content);assert.deepEqual(calls,[url]);
+  }
+});
+
+test('same-origin relative application anchor resolves to the exact reviewed source URL',async()=>{
+  const jd=linkedJD.replace(`href="${applicationUrl}"`,`href="/careers/product-intern/apply/"`);
+  assert.ok(await fetchEmployerEmailPosting(url,linkedChannel,{fetcher:linkedFetcher(jd)}));
+});
+
+test('linked source must share the exact HTTPS employer origin before any fetch',async()=>{
+  for(const sourceUrl of ['https://other.com/apply','http://employer.com/apply','https://jobs.employer.com/apply','https://employer.com:444/apply','https://user:pass@employer.com/apply']) {
+    assert.equal(await fetchEmployerEmailPosting(url,{...linkedChannel,sourceUrl},{fetcher:()=>assert.fail('must not fetch')}),null);
+  }
+});
+
+test('reviewed role must be present on both role page and application page',async()=>{
+  for(const [jd,application] of [[linkedJD.replaceAll('Product Intern','Engineer'),linkedApplication],[linkedJD,linkedApplication.replaceAll('Product Intern','Engineer')]]) {
+    assert.equal(await fetchEmployerEmailPosting(url,linkedChannel,{fetcher:linkedFetcher(jd,application)}),null);
+  }
+});
+
+test('recipient and exact quote must occur on the linked application page itself',async()=>{
+  for(const application of [linkedApplication.replace(quote,'Apply here'),linkedApplication.replace('careers@employer.com','other@employer.com')]) {
+    assert.equal(await fetchEmployerEmailPosting(url,linkedChannel,{fetcher:linkedFetcher(linkedJD+`<p>${quote}</p>`,application)}),null);
+  }
+});
+
+test('linked application redirects stay same-origin and remain bounded',async()=>{
+  let calls=0;
+  const same=await fetchEmployerEmailPosting(url,linkedChannel,{fetcher:async target=>{
+    calls++;
+    if(target===url)return page(linkedJD);
+    if(target===applicationUrl)return new Response(null,{status:302,headers:{location:'/careers/application-current'}});
+    return page(linkedApplication);
+  }});
+  assert.ok(same);assert.equal(calls,3);
+  for(const location of ['https://other.com/apply','/loop']) {
+    calls=0;
+    const result=await fetchEmployerEmailPosting(url,linkedChannel,{fetcher:async target=>{
+      calls++;return target===url?page(linkedJD):new Response(null,{status:302,headers:{location}});
+    }});
+    assert.equal(result,null);assert.equal(calls,location.startsWith('https:')?2:4);
+  }
+});
+
+test('linked pages reject expired/challenged applications and combined text beyond the posting cap',async()=>{
+  for(const application of [linkedApplication+'<p>Applications are closed</p>',linkedApplication+'<p>Verify you are human</p>',linkedApplication+'x'.repeat(26000)]) {
+    const jd=application.includes('x'.repeat(26000))?linkedJD+'y'.repeat(26000):linkedJD;
+    assert.equal(await fetchEmployerEmailPosting(url,linkedChannel,{fetcher:linkedFetcher(jd,application)}),null);
+  }
+});
