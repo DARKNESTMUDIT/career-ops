@@ -1,4 +1,4 @@
-import { permitsStatedRemoteRequirement } from './policy.mjs';
+import { permitsStatedRemoteRequirement, validStudentStatus } from './policy.mjs';
 
 const isoDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0,10) === value;
 const bounded = (value, maximum) => typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= maximum;
@@ -6,7 +6,7 @@ const bounded = (value, maximum) => typeof value === 'number' && Number.isFinite
 // These are candidate limits from primary profile configuration. An extracted
 // posting may select a track, but cannot supply or overwrite any availability.
 export function availabilityDisclosure(context, job) {
-  const remoteRequirement=remoteRequirementDisclosure(context,job);
+  const remoteRequirement=[remoteRequirementDisclosure(context,job),studentStatusDisclosure(context,job)].filter(Boolean).join('\n\n');
   if (context?.policy?.applyWithStatedAvailability !== true) return remoteRequirement;
   const track = job?.track;
   if (!['remote','summer'].includes(track)) throw new Error('Valid candidate availability track required');
@@ -24,6 +24,13 @@ export function availabilityDisclosure(context, job) {
 export function remoteRequirementDisclosure(context, job) {
   if (!permitsStatedRemoteRequirement(job,context?.policy)) return '';
   return 'I require a fully remote arrangement from India. The posting describes the role as remote-friendly; whether it supports fully remote work from India is not employer-confirmed. Please confirm this requirement can be accommodated.';
+}
+
+export function studentStatusDisclosure(context, job) {
+  if(context?.policy?.applyWithStatedStudentStatus!==true || job?.studentEligible!==null)return '';
+  const status=context?.profile?.application_disclosures?.student_status;
+  if(!validStudentStatus(status) || status!==context.policy.studentStatus)throw new Error('Primary student status disclosure is missing or changed');
+  return `My current student status: ${status}. The posting does not confirm eligibility for my degree and year. Please confirm whether my current student status is suitable.`;
 }
 
 // Only express a learning aspiration. Never transform targeting/narrative into

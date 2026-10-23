@@ -70,6 +70,27 @@ export function permitsStatedRemoteRequirement(job, policy) {
   return true;
 }
 
+export function validStudentStatus(value) {
+  return typeof value==='string' && value.trim().length>=10 && value.length<=600 && !/[\x00-\x1f\x7f]/.test(value) &&
+    /\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|[1-8](?:st|nd|rd|th)?)[\s-]+year\b|\byear\s+[1-8]\b/i.test(value) &&
+    /\b(?:bachelor|master|doctor|diploma|associate|mbbs|llb|llm|bba|bca|bms|bs|ba|be|bsc|bcom|btech|mtech|mba|mca|ma|ms|msc|b\.\s*(?:com|sc|tech|a|e)|m\.\s*(?:sc|tech|a))\b/i.test(value);
+}
+
+function studentQualificationConflict(job) {
+  // This exception handles omitted eligibility, not inferred equivalence to a
+  // published qualification. Do not let source headings hide a restriction.
+  const source=(String(job.jd || '')+' '+String(job.evidence?.studentEligible || '')).normalize('NFKC')
+    .replace(/\b(?:any|all)\s+(?:(?:bachelor['’]?s?|undergraduate)\s+)?(?:degree|discipline|field|stream)s?\b/gi,' ')
+    .replace(/\bno\s+(?:specific\s+)?(?:degree|qualification)s?\s+(?:is\s+|are\s+)?required\b|\bdegree\s+is\s+not\s+required\b/gi,' ');
+  return /\b(?:graduates?|graduated|graduation|post[\s-]?graduate|post[\s-]?graduation|master['’]?s?|doctoral|ph\.?d\.?|mba|mca|bca|cse|b\.?\s?tech|m\.?\s?tech|b\.?\s?sc|m\.?\s?sc|bcom|b\.\s?com|bba|bachelor['’]?s?|degree|diploma)\b|\b(?:final|last|first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)[\s-]+year\b|\byear\s*[1-6]\b|\b(?:computer science|engineering|stem)\b[^.!?\n]{0,50}\b(?:students?|only|required|qualifications?)\b|\b(?:students?|background|pursuing|enrolled|qualifications?)\b[^.!?\n]{0,50}\b(?:computer science|engineering|stem)\b/i.test(source);
+}
+
+export function permitsStatedStudentStatus(job, policy) {
+  const roleEvidence=job?.evidence?.role;
+  return policy?.applyWithStatedStudentStatus===true && validStudentStatus(policy.studentStatus) && job?.studentEligible===null && typeof job.jd==='string' && job.jd.trim().length>=100 &&
+    typeof roleEvidence==='string' && job.jd.includes(roleEvidence) && /\bintern(?:ship)?s?\b/i.test(roleEvidence) && !/\b(?:permanent|full[\s-]time)\s+(?:role|position|employment)\b/i.test(roleEvidence) && !studentQualificationConflict(job);
+}
+
 // A model extracts evidence. It cannot waive these gates or authorize an action.
 export function assess(job, policy, today = dayInIndia()) {
   const missing = [], reject = [];
@@ -79,13 +100,15 @@ export function assess(job, policy, today = dayInIndia()) {
   if (typeof job.jd !== 'string' || job.jd.trim().length < 100) missing.push('Full job description missing');
   if (job.active !== true) missing.push('Active posting not verified');
   const statedRemote = permitsStatedRemoteRequirement(job,policy);
+  const statedStudent = permitsStatedStudentStatus(job,policy);
+  if(policy.applyWithStatedStudentStatus===true && job.studentEligible===null && studentQualificationConflict(job))reject.push('Published student qualification requires explicit compatibility; status disclosure cannot waive it');
   if (policy.applyWithStatedRemoteRequirement === true && job.track === 'remote' && /\bremote[\s-]friendly\b/i.test(job.evidence?.remote || '')) {
     if (remoteWorkplaceConflict(job)) reject.push('Explicit workplace requirement conflicts with fully remote work');
     if (job.remote === true && !/\b(?:fully|100%)\s+remote\b/i.test(job.evidence.remote)) missing.push('Remote-friendly evidence does not establish fully remote work; keep employer remote unknown');
   }
   const optionalSchedule = key => policy.applyWithStatedAvailability === true && ['start','end','deadline','hours'].includes(key) && job[key] == null;
   for (const key of ['company', 'role', 'start', 'end', 'deadline', 'hours', 'indiaEligible', 'studentEligible', 'remote', 'duties', 'pay', 'fit']) {
-    if (optionalSchedule(key) || (key === 'remote' && statedRemote)) continue;
+    if (optionalSchedule(key) || (key === 'remote' && statedRemote) || (key === 'studentEligible' && statedStudent)) continue;
     if (job[key] === null || job[key] === undefined || job[key] === '') missing.push(`Missing ${key}`);
     else {
       const quote = job.evidence?.[key];
@@ -99,7 +122,7 @@ export function assess(job, policy, today = dayInIndia()) {
   if (validDate(job.deadline) && job.deadline < today) reject.push('Application deadline passed');
   if (job.indiaEligible === false) reject.push('Not eligible from India');
   if (job.studentEligible === false) reject.push('Student requirements incompatible');
-  if (!['boolean'].includes(typeof job.indiaEligible) || typeof job.studentEligible !== 'boolean' || (typeof job.remote !== 'boolean' && !statedRemote)) missing.push('Eligibility requires explicit booleans');
+  if (!['boolean'].includes(typeof job.indiaEligible) || (typeof job.studentEligible !== 'boolean' && !statedStudent) || (typeof job.remote !== 'boolean' && !statedRemote)) missing.push('Eligibility requires explicit booleans');
   if (!optionalSchedule('hours') && (!Number.isFinite(job.hours) || job.hours <= 0)) missing.push('Invalid hours');
   if (job.durationMonths != null) {
     const durationIssues=quantifiedEvidenceIssues(job,policy).filter(issue=>issue.startsWith('Duration in months'));
