@@ -191,3 +191,25 @@ test('linked pages reject expired/challenged applications and combined text beyo
     assert.equal(await fetchEmployerEmailPosting(url,linkedChannel,{fetcher:linkedFetcher(jd,application)}),null);
   }
 });
+
+test('published Application dash exact-role subject accepts only an optional Remote suffix',async()=>{
+  const reviewed={...channel,role:'AI Engineer Intern',quote:channel.recipient};
+  for(const subject of ['Application - AI Engineer Intern (Remote)','Application - AI Engineer Intern','Application – AI Engineer Intern','Application – AI Engineer Intern (Remote)']) {
+    const href=`mailto:${channel.recipient}?subject=${encodeURIComponent(subject)}`;
+    const body=`<h1>AI Engineer Intern</h1><p>Remote India internship.</p><a href="${href}">or email</a>`;
+    const result=await fetchEmployerEmailPosting(url,reviewed,{fetcher:async()=>page(body)});
+    assert.ok(result,subject);
+    assert.ok(result.text.includes(`Published application mailto: ${JSON.stringify({recipient:channel.recipient,subject,body:''})}`));
+  }
+});
+
+test('dash subject grammar rejects wrong roles, smuggled suffixes, recipients and headers',async()=>{
+  const reviewed={...channel,role:'AI Engineer Intern',quote:channel.recipient};
+  const valid=`mailto:${channel.recipient}?subject=${encodeURIComponent('Application - AI Engineer Intern (Remote)')}`;
+  const badSubjects=['Application - Software Engineer Intern (Remote)','Application - Senior AI Engineer Intern','Application - AI Engineer Internship','Application - AI Engineer Intern (Hybrid)','Application - AI Engineer Intern (Remote India)','Application - AI Engineer Intern (Remote) - referral','Application - AI Engineer Intern (Remote) (Remote)','Application - AI Engineer Intern and Sales Intern','Referral Application - AI Engineer Intern','Apply - AI Engineer Intern','Application - AI Engineer Intern\r\nBcc:other@employer.com'];
+  const hrefs=[...badSubjects.map(subject=>`mailto:${channel.recipient}?subject=${encodeURIComponent(subject)}`),valid+'&cc=other@employer.com',valid+'&bcc=other@employer.com',valid+'&%62cc=other@employer.com',valid+'&subject=Other',valid.replace(channel.recipient,channel.recipient+',other@employer.com'),valid.replace(channel.recipient,'other@employer.com'),valid+'&body=%00'];
+  for(const href of hrefs) {
+    const body=`<h1>AI Engineer Intern</h1><a href="${href}">or email</a>`;
+    assert.equal(await fetchEmployerEmailPosting(url,reviewed,{fetcher:async()=>page(body)}),null,href);
+  }
+});

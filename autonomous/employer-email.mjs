@@ -63,7 +63,11 @@ function applicationMailtoEvidence(html, channel) {
       if (!valid || /[\x00-\x1f\x7f]/.test(subject) || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(body)) continue;
       const normalizedSubject = subject.replace(/\s+/g, ' ').toLowerCase();
       const subjectRole = normalizedSubject.replace(/^(?:application|apply) for /, '').replace(/ (?:position|role)$/, '');
-      if (!/^(?:application|apply) for /.test(normalizedSubject) || subjectRole !== role) continue;
+      const originalGrammar = /^(?:application|apply) for /.test(normalizedSubject) && subjectRole === role;
+      // A published dash grammar must name exactly the reviewed role. Only
+      // the literal optional workplace suffix is allowed; no other qualifiers.
+      const dashRole = normalizedSubject.match(/^application [-–] (.+?)(?: \(remote\))?$/)?.[1];
+      if (!originalGrammar && dashRole !== role) continue;
       const evidence = `Published application mailto: ${JSON.stringify({ recipient, subject, body })}`;
       if (evidence.length <= 10000) lines.add(evidence);
       if ([...lines].join('\n').length > 12000) return '';
