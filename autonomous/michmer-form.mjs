@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { authorizeSubmission } from './rollout.mjs';
 import { uploadedHash } from './browser.mjs';
 import { hash } from './policy.mjs';
+import { verifyBundle } from './bundle.mjs';
 import { htmlToText } from '../providers/_html-to-text.mjs';
 
 export const MICHMER = Object.freeze({
@@ -16,6 +17,7 @@ export const MICHMER = Object.freeze({
 const sha = value => createHash('sha256').update(value).digest('hex');
 const fields=['role','city','name','email','cityOther','links','website','resumeName','t','resume'];
 const inputIds=['role','city','cityOther','name','email','links','resume','website'];
+export const MICHMER_TIMING_REJECTION_BODY='{"error":"That was submitted too quickly. Please try again."}';
 function privateWrite(file,value) { fs.writeFileSync(file,value,{flag:'wx',mode:0o600}); return sha(value); }
 function exactPage(value) { try { const u=new URL(value);return u.origin==='https://michmer.in' && u.pathname==='/careers' && !u.search && !u.username && !u.password; } catch { return false; } }
 function exactRolePage(value) { return exactPage(value) && ['', '#product-management'].includes(new URL(value).hash); }
@@ -160,6 +162,8 @@ export async function submitMichmerPrepared(page,{ledger,id,context,prepared,res
     const [response]=await Promise.all([responsePromise,page.locator('#applyForm #submitBtn').click({timeout:15000})]);
     const body=await response.text();
     privateWrite(path.join(bundle,'michmer-response.txt'),body);
+    // Preserve what the provider actually returned before interpreting it.
+    privateWrite(path.join(bundle,'michmer-response-metadata.json'),JSON.stringify({version:1,provider:'michmer',jobId:id,attempt,url:response.url(),status:response.status(),contentType:response.headers()['content-type'] || null,responseHash:sha(body),at:new Date().toISOString()},null,2));
     const accepted=verifyMichmerResponse({url:response.url(),status:response.status(),body,contentType:response.headers()['content-type']});
     await page.waitForFunction(expected=>document.querySelector('#applyForm #msg.ok')?.textContent===expected && document.querySelector('#applyForm #submitBtn')?.style.display==='none',MICHMER.acceptedMessage,{timeout:10000});
     if(postCount!==1 || boundaryCount!==1 || !boundaryProof || !requestProof)throw new Error('Michmer POST proof unavailable');
@@ -178,10 +182,14 @@ function michmerReceipt(proof,bundle) {return {kind:'form-confirmation',provider
 
 export async function reconcileMichmerForm({ledger,id}) {
   const job=ledger.job(id),attempt=ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id);
-  if(!job || !attempt || !['submitting','uncertain','confirmed','applied'].includes(job.state) || job.payload.formIntent?.attempt!==attempt.id || job.payload.formIntent?.provider!=='michmer')throw new Error('Missing exact Michmer durable intent');
+  if(!job || !attempt || !['submitting','uncertain','confirmed','applied','exception','rejected'].includes(job.state) || job.payload.formIntent?.attempt!==attempt.id || job.payload.formIntent?.provider!=='michmer')throw new Error('Missing exact Michmer durable intent');
   const intent=job.payload.formIntent,bundle=intent.bundle;
   const file=path.join(bundle,'michmer-accepted.json');
-  if(!fs.existsSync(file))return {confirmed:false,requiresReview:true,reason:'No durable accepted-response proof. Public GET has no application lookup; never resend.'};
+  if(!fs.existsSync(file)) {
+    const response=path.join(bundle,'michmer-response.txt');
+    if(fs.existsSync(response) && fs.readFileSync(response,'utf8')===MICHMER_TIMING_REJECTION_BODY)return reconcileMichmerRejection({ledger,id});
+    return {confirmed:false,requiresReview:true,reason:'No durable accepted-response proof. Public GET has no application lookup; never resend.'};
+  }
   const proof=JSON.parse(fs.readFileSync(file,'utf8'));
   if(proof.jobId!==id || proof.attempt!==attempt.id || proof.sourceUrl!==MICHMER.source || intent.sourceUrl!==MICHMER.source || proof.endpoint!==MICHMER.endpoint || proof.preparedHash!==intent.preparedHash || sha(fs.readFileSync(path.join(bundle,'michmer-request.bin')))!==proof.requestHash || sha(fs.readFileSync(path.join(bundle,'michmer-response.txt')))!==proof.responseHash || sha(fs.readFileSync(path.join(bundle,'michmer-receipt.png')))!==proof.screenshotHash)throw new Error('Michmer receipt evidence integrity mismatch');
   const prepared=JSON.parse(fs.readFileSync(path.join(bundle,'answers.json'),'utf8'));
@@ -192,6 +200,83 @@ export async function reconcileMichmerForm({ledger,id}) {
   await verifyMichmerRequest({url:proof.endpoint,method:'POST',contentType:proof.contentType,body:fs.readFileSync(path.join(bundle,'michmer-request.bin'))},prepared,fs.readFileSync(path.join(bundle,'resume.pdf')),boundaryProof);
   verifyMichmerResponse({url:proof.endpoint,status:proof.status,body:fs.readFileSync(path.join(bundle,'michmer-response.txt'),'utf8'),contentType:proof.responseContentType});
   const receipt=michmerReceipt(proof,bundle);ledger.receipt(id,receipt);return {confirmed:true,receipt};
+}
+
+const rejectionFiles=['manifest.json','answers.json','resume.pdf','michmer-boundary.json','michmer-request.bin','michmer-response.txt','michmer-response-metadata.json','michmer-rejected.json','michmer-accepted.json'];
+export function michmerRejectionSnapshot(ledger,id) {
+  const job=ledger.job(id),bundle=job?.payload.formIntent?.bundle;
+  if(typeof bundle!=='string')throw new Error('Missing Michmer rejection bundle');
+  return sha(JSON.stringify({job,attempt:ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id),events:ledger.db.prepare("SELECT kind,detail FROM events WHERE job_id=? AND kind IN ('submission-intent','form-post-evidence') ORDER BY id").all(id),files:rejectionFiles.map(name=>{const file=path.join(bundle,name);return [name,fs.existsSync(file)?sha(fs.readFileSync(file)):null];})}));
+}
+
+async function rejectedEvidence(ledger,id) {
+  if(!ledger.ownsLock())throw new Error('Michmer rejection reconciliation requires the active runner lock');
+  const job=ledger.job(id),attempt=ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id),intent=job?.payload.formIntent;
+  if(!job || !attempt || !['submitting','uncertain','exception','rejected'].includes(job.state) || !['intent','rejected'].includes(attempt.outcome) || intent?.provider!=='michmer' || intent.attempt!==attempt.id || intent.sourceUrl!==MICHMER.source || intent.endpoint!==MICHMER.endpoint || !exactRolePage(job.url) || job.payload.role!==MICHMER.roleLabel || !Number.isFinite(Date.parse(intent.at)))throw new Error('Missing exact unresolved Michmer rejection intent');
+  const bundle=intent.bundle;
+  if(typeof bundle!=='string' || path.resolve(bundle)!==path.resolve(job.payload.bundle) || fs.existsSync(path.join(bundle,'michmer-accepted.json')))throw new Error('Michmer rejection bundle mismatch or conflicting acceptance');
+  if(!verifyBundle(bundle,job.payload.fingerprints))throw new Error('Michmer rejection sealed bundle integrity mismatch');
+  const prepared=JSON.parse(fs.readFileSync(path.join(bundle,'answers.json'),'utf8'));
+  if(!prepared.complete || prepared.provider!=='michmer' || prepared.contract?.source!==MICHMER.source || prepared.contract?.endpoint!==MICHMER.endpoint || prepared.contract?.scriptHash!==MICHMER.scriptHash || sha(JSON.stringify(prepared))!==intent.preparedHash)throw new Error('Michmer rejection prepared answers integrity mismatch');
+  const intents=ledger.db.prepare("SELECT detail FROM events WHERE job_id=? AND kind='submission-intent'").all(id).map(event=>JSON.parse(event.detail)).filter(event=>event.attempt===attempt.id);
+  if(intents.length!==1 || JSON.stringify(intents[0].fingerprints)!==JSON.stringify(job.payload.fingerprints))throw new Error('Michmer immutable submission intent mismatch');
+  const posts=ledger.db.prepare("SELECT detail FROM events WHERE job_id=? AND kind='form-post-evidence'").all(id).map(event=>JSON.parse(event.detail)).filter(event=>event.attempt===attempt.id);
+  if(posts.length!==1 || posts[0].source!==MICHMER.source)throw new Error('Michmer immutable POST evidence missing or ambiguous');
+  const request=fs.readFileSync(path.join(bundle,'michmer-request.bin')),resume=fs.readFileSync(path.join(bundle,'resume.pdf'));
+  if(request.length>6*1048576 || resume.length>5*1048576 || hash(resume.toString('base64'))!==prepared.resumeHash || !resume.subarray(0,5).equals(Buffer.from('%PDF-')))throw new Error('Michmer rejection PDF integrity mismatch');
+  if(sha(request)!==posts[0].requestHash)throw new Error('Michmer immutable request hash mismatch');
+  const native=JSON.parse(fs.readFileSync(path.join(bundle,'michmer-boundary.json'),'utf8'));
+  const boundary=verifyMichmerBoundary(native,prepared,resume);
+  const requestProof=await verifyMichmerRequest({url:MICHMER.endpoint,method:'POST',contentType:posts[0].contentType,body:request},prepared,resume,boundary);
+  if(requestProof.requestBodyIncludesFile!==posts[0].requestBodyIncludesFile)throw new Error('Michmer recorded request shape mismatch');
+  const parsed=await new Response(request,{headers:{'content-type':posts[0].contentType}}).formData(),nativeFields=new Map(native.entries);
+  for(const name of fields.filter(name=>name!=='resume'))if(parsed.get(name)!==nativeFields.get(name))throw new Error('Michmer native and recorded request fields differ');
+  const body=fs.readFileSync(path.join(bundle,'michmer-response.txt'),'utf8');
+  if(body!==MICHMER_TIMING_REJECTION_BODY)throw new Error('Unknown Michmer response is not definitive rejection proof');
+  const metadataPath=path.join(bundle,'michmer-response-metadata.json');
+  let status=null,responseContentType=null,metadataHash=null;
+  if(fs.existsSync(metadataPath)) {
+    const bytes=fs.readFileSync(metadataPath),metadata=JSON.parse(bytes.toString('utf8'));
+    if(metadata.version!==1 || metadata.provider!=='michmer' || metadata.jobId!==id || metadata.attempt!==attempt.id || metadata.url!==MICHMER.endpoint || !Number.isInteger(metadata.status) || metadata.status<400 || metadata.status>=500 || !/^application\/json\b/i.test(metadata.contentType || '') || metadata.responseHash!==sha(body) || !Number.isFinite(Date.parse(metadata.at)))throw new Error('Michmer rejection response metadata mismatch');
+    status=metadata.status;responseContentType=metadata.contentType;metadataHash=sha(bytes);
+  }
+  return {version:1,provider:'michmer',jobId:id,attempt:attempt.id,sourceUrl:MICHMER.source,endpoint:MICHMER.endpoint,intentHash:sha(JSON.stringify(intent)),preparedHash:intent.preparedHash,...requestProof,...boundary,responseHash:sha(body),status,observedStatus:status===null?'UNKNOWN':String(status),responseContentType,metadataHash,postEvidenceHash:sha(JSON.stringify(posts[0])),reason:'provider-timing-rejection',noRetry:true};
+}
+function rejectedReceipt(proof,bundle) {
+  return {kind:'form-rejected',provider:'michmer',reference:`michmer-rejected:${proof.attempt}:${proof.requestHash}:${proof.responseHash}`,jobId:proof.jobId,sourceUrl:proof.sourceUrl,endpoint:proof.endpoint,evidencePath:path.join(bundle,'michmer-rejected.json'),status:proof.status,observedStatus:proof.observedStatus,reason:proof.reason,noRetry:true,at:proof.at};
+}
+export async function verifyMichmerRejectedReceipt({ledger,id}) {
+  const before=michmerRejectionSnapshot(ledger,id),core=await rejectedEvidence(ledger,id),job=ledger.job(id),attempt=ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id);
+  if(attempt.outcome!=='rejected' || !['exception','rejected'].includes(job.state))throw new Error('Michmer rejection is not durably reconciled');
+  const proof=JSON.parse(fs.readFileSync(path.join(job.payload.bundle,'michmer-rejected.json'),'utf8'));
+  if(Object.entries(core).some(([key,value])=>JSON.stringify(proof[key])!==JSON.stringify(value)) || !Number.isFinite(Date.parse(proof.at)))throw new Error('Michmer durable rejection evidence mismatch');
+  const receipt=rejectedReceipt(proof,job.payload.bundle);
+  if(JSON.stringify(JSON.parse(attempt.receipt))!==JSON.stringify(receipt) || before!==michmerRejectionSnapshot(ledger,id))throw new Error('Michmer rejected receipt integrity mismatch');
+  return {receipt,snapshot:before};
+}
+export async function reconcileMichmerRejection({ledger,id}) {
+  const existing=ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id);
+  if(existing?.outcome==='rejected') {
+    const verified=await verifyMichmerRejectedReceipt({ledger,id});
+    return {confirmed:false,rejected:true,noRetry:true,receipt:verified.receipt};
+  }
+  const before=michmerRejectionSnapshot(ledger,id),core=await rejectedEvidence(ledger,id);
+  if(before!==michmerRejectionSnapshot(ledger,id))throw new Error('Michmer rejection evidence changed during verification');
+  const job=ledger.job(id),file=path.join(job.payload.bundle,'michmer-rejected.json');
+  let proof;
+  if(fs.existsSync(file)) {
+    proof=JSON.parse(fs.readFileSync(file,'utf8'));
+    if(Object.entries(core).some(([key,value])=>JSON.stringify(proof[key])!==JSON.stringify(value)) || !Number.isFinite(Date.parse(proof.at)))throw new Error('Conflicting durable Michmer rejection proof');
+  } else { proof={...core,at:new Date().toISOString()};privateWrite(file,JSON.stringify(proof,null,2)); }
+  const receipt=rejectedReceipt(proof,job.payload.bundle);
+  ledger.transaction(()=>{
+    if(!ledger.ownsLock() || ledger.job(id).state!==job.state || ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id).outcome!=='intent')throw new Error('Michmer attempt changed during rejection reconciliation');
+    ledger.db.prepare("UPDATE attempts SET outcome='rejected',receipt=? WHERE job_id=? AND outcome='intent'").run(JSON.stringify(receipt),id);
+    const payload={...job.payload,reasons:['Provider definitively rejected this submission. No application recorded; do not retry or resubmit.']};
+    ledger.db.prepare("UPDATE jobs SET state='exception',payload=?,updated=? WHERE id=?").run(JSON.stringify(payload),new Date().toISOString(),id);
+    ledger.event(id,'form-rejected',{attempt:core.attempt,receipt});
+  });
+  return {confirmed:false,rejected:true,noRetry:true,receipt};
 }
 
 export async function fetchMichmerPosting(url,fetcher=fetch) {

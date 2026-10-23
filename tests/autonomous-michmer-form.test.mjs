@@ -95,3 +95,16 @@ test('actual rollout, bundle and ledger lock authorize exactly one isolated adap
  assert.equal((await reconcileMichmerForm({ledger,id})).receipt.reference,receipt.reference);
  await assert.rejects(realTransport.submitMichmer(f.page,f));assert.equal(posts,1);
 });
+
+test('definitive timing rejection captures raw response metadata before parser failure and never retries',async t=>{
+ const f=await fixture(t),body='{"error":"That was submitted too quickly. Please try again."}',posts=await network(f,{status:400,body});
+ await assert.rejects(transport.submitMichmer(f.page,f),/no verified accepted/);
+ assert.equal(posts(),1);assert.equal(f.job.state,'uncertain');
+ const metadata=JSON.parse(fs.readFileSync(path.join(f.bundle,'michmer-response-metadata.json'),'utf8'));
+ assert.equal(metadata.status,400);assert.equal(metadata.url,MICHMER.endpoint);assert.equal(metadata.contentType,'application/json');
+ assert.equal(metadata.responseHash,createHash('sha256').update(body).digest('hex'));
+ assert.equal(metadata.jobId,f.id);assert.equal(metadata.attempt,'attempt-fixture');
+ assert.equal(fs.readFileSync(path.join(f.bundle,'michmer-response.txt'),'utf8'),body);
+ assert.equal(fs.existsSync(path.join(f.bundle,'michmer-accepted.json')),false);
+ await assert.rejects(transport.submitMichmer(f.page,f),/duplicate/);assert.equal(posts(),1);
+});

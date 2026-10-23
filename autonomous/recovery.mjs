@@ -2,6 +2,7 @@ import { resolveTrackerPathForWrite } from '../path-resolver.mjs';
 import { canonicalizeTrackerPath, openTrackerTransaction } from '../tracker-utils.mjs';
 import { detectColumns, parseTrackerRow } from '../tracker-parse.mjs';
 import { identityKey } from './policy.mjs';
+import { verifyMichmerRejectedReceipt, michmerRejectionSnapshot } from './michmer-form.mjs';
 
 const sentStates = new Set(['Applied','Responded','Interview','Offer','Hired','Rejected','Discarded']);
 
@@ -13,6 +14,10 @@ export async function resolveIntegrityPause(root, ledger) {
   const target = canonicalizeTrackerPath(resolveTrackerPathForWrite(root));
   const tracker = await openTrackerTransaction(target);
   try {
+    const rejected = new Map();
+    for (const attempt of ledger.db.prepare("SELECT * FROM attempts WHERE outcome='rejected'").all()) {
+      rejected.set(attempt.job_id,await verifyMichmerRejectedReceipt({ledger,id:attempt.job_id}));
+    }
     return ledger.transaction(() => {
       if (!ledger.ownsLock()) throw new Error('Integrity recovery requires the active runner lock');
       const failure = ledger.get('integrityFailure');
@@ -37,6 +42,11 @@ export async function resolveIntegrityPause(root, ledger) {
       if (!cols || ['num','company','role','status','notes'].some(k => !cols[k])) throw new Error('Tracker header is malformed');
       const rows = lines.map(line => parseTrackerRow(line, cols)).filter(Boolean);
       for (const attempt of attempts) {
+        if(attempt.outcome==='rejected') {
+          const verified=rejected.get(attempt.job_id),job=jobs.find(j=>j.id===attempt.job_id);
+          if(!verified || verified.snapshot!==michmerRejectionSnapshot(ledger,attempt.job_id) || !['exception','rejected'].includes(job?.state) || job.payload.trackerSync?.verified===true || content.includes(`[autonomous:${attempt.job_id}]`))throw new Error('Rejected submission proof or absence of tracker credit cannot be verified');
+          continue;
+        }
         if (attempt.outcome !== 'confirmed') throw new Error('Non-confirmed durable attempt requires reconciliation');
         const job = jobs.find(j => j.id === attempt.job_id);
         const sync = job?.payload.trackerSync;
@@ -63,11 +73,12 @@ export async function resolveIntegrityPause(root, ledger) {
         const receiptStart = row.notes.indexOf('receipt ');
         if (receiptStart < 0 || row.notes.slice(receiptStart) !== receiptText) throw new Error('Tracker receipt reference drift');
       }
-      ledger.event(null,'integrity-recovered',{failure,verifiedApplications:attempts.length,tracker:target});
+      const verifiedApplications=attempts.filter(attempt=>attempt.outcome==='confirmed').length;
+      ledger.event(null,'integrity-recovered',{failure,verifiedApplications,tracker:target});
       ledger.set('integrityFailure',null);
       ledger.set('paused',false);
       ledger.set('pauseReason',null);
-      return {resolved:true,verifiedApplications:attempts.length,tracker:target};
+      return {resolved:true,verifiedApplications,tracker:target};
     });
   } finally { tracker.close(); }
 }
