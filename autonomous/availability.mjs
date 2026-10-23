@@ -1,10 +1,13 @@
+import { permitsStatedRemoteRequirement } from './policy.mjs';
+
 const isoDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0,10) === value;
 const bounded = (value, maximum) => typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= maximum;
 
 // These are candidate limits from primary profile configuration. An extracted
 // posting may select a track, but cannot supply or overwrite any availability.
 export function availabilityDisclosure(context, job) {
-  if (context?.policy?.applyWithStatedAvailability !== true) return '';
+  const remoteRequirement=remoteRequirementDisclosure(context,job);
+  if (context?.policy?.applyWithStatedAvailability !== true) return remoteRequirement;
   const track = job?.track;
   if (!['remote','summer'].includes(track)) throw new Error('Valid candidate availability track required');
   const configured = context?.profile?.availability?.[track];
@@ -15,7 +18,12 @@ export function availabilityDisclosure(context, job) {
       typeof workplace !== 'string' || !workplace.trim() || /[\r\n\u0000-\u001f\u007f]/.test(workplace)) {
     throw new Error('Primary candidate availability configuration is malformed');
   }
-  return `My availability is ${workplace.trim()}, starting ${start === 'immediate' ? 'immediately' : start}, for up to ${months} months, ending no later than ${end}, and up to ${hours} hours per week. These are my candidate availability limits; they are not an employer-confirmed schedule. Please confirm whether the role can accommodate this availability.`;
+  return `${remoteRequirement ? remoteRequirement+'\n\n' : ''}My availability is ${workplace.trim()}, starting ${start === 'immediate' ? 'immediately' : start}, for up to ${months} months, ending no later than ${end}, and up to ${hours} hours per week. These are my candidate availability limits; they are not an employer-confirmed schedule. Please confirm whether the role can accommodate this availability.`;
+}
+
+export function remoteRequirementDisclosure(context, job) {
+  if (!permitsStatedRemoteRequirement(job,context?.policy)) return '';
+  return 'I require a fully remote arrangement from India. The posting describes the role as remote-friendly; whether it supports fully remote work from India is not employer-confirmed. Please confirm this requirement can be accommodated.';
 }
 
 // Only express a learning aspiration. Never transform targeting/narrative into

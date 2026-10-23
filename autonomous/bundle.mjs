@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { hash, validateClaims } from './policy.mjs';
+import { remoteRequirementDisclosure } from './availability.mjs';
 
 const escape = s => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 // Tailor emphasis by ordering bullet points within their original section. Never
@@ -20,11 +21,13 @@ export function tailoredResume(context, job) {
   }
   const claims = lines.filter(l => l.trim()).map(text => ({ text, quote: text, source: 'cv.md' }));
   validateClaims(claims, context.sources);
-  const body = claims.map(({text}) => {
+  let body = claims.map(({text}) => {
     const heading = text.match(/^(#{1,3}) (.*)$/);
     if (heading) return `<h${heading[1].length}>${escape(heading[2])}</h${heading[1].length}>`;
     return `<p>${escape(text.replaceAll('**','').replace(/^[-*] /,'• '))}</p>`;
   }).join('\n');
+  const remoteRequirement=remoteRequirementDisclosure(context,job);
+  if (remoteRequirement) body+=`\n<h2>Work arrangement requirement</h2><p>${escape(remoteRequirement)}</p>`;
   return { claims, html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Resume</title><style>@page{size:A4;margin:15mm}body{font:10pt Arial,sans-serif;line-height:1.25;color:#111}h1{font-size:21pt;margin:0 0 7px}h2{font-size:12.5pt;margin:11px 0 5px;border-bottom:1px solid #ccc;break-after:avoid}h3{font-size:10.5pt;margin:8px 0 4px;break-after:avoid}p{margin:3px 0;orphans:2;widows:2}</style></head><body>${body}</body></html>` };
 }
 

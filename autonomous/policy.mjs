@@ -52,6 +52,24 @@ export function currentSchedule(job, policy, today = dayInIndia()) {
     : validDate(job[key]) && job[key] >= today);
 }
 
+// A candidate requirement is not an employer workplace fact. Only a literal,
+// current remote-friendly quotation permits leaving remote unknown; conflicting
+// workplace language still fails closed and all other eligibility gates apply.
+function remoteWorkplaceConflict(job) {
+  const source=String(job.evidence?.remote || '')+' '+String(job.jd || '');
+  // Employer content cannot declare a boundary that conceals a contradiction.
+  // This narrow exception deliberately refuses ambiguous workplace language.
+  return /\b(?:hybrid|on[\s-]?site|in[\s-]?office)\b|\b(?:not|no|never)\s+(?:fully\s+)?remote\b|\bremote\s+(?:work\s+)?(?:is\s+)?(?:not\s+(?:allowed|available|supported)|unavailable)\b/i.test(source);
+}
+
+export function permitsStatedRemoteRequirement(job, policy) {
+  if (policy?.applyWithStatedRemoteRequirement !== true || job?.track !== 'remote' || job.remote !== null) return false;
+  const quote=job.evidence?.remote, jd=job.jd;
+  if (typeof quote !== 'string' || typeof jd !== 'string' || !jd.includes(quote) || !/\bremote[\s-]friendly\b/i.test(quote)) return false;
+  if (remoteWorkplaceConflict(job)) return false;
+  return true;
+}
+
 // A model extracts evidence. It cannot waive these gates or authorize an action.
 export function assess(job, policy, today = dayInIndia()) {
   const missing = [], reject = [];
@@ -60,9 +78,14 @@ export function assess(job, policy, today = dayInIndia()) {
   if (!track) missing.push('Unknown track');
   if (typeof job.jd !== 'string' || job.jd.trim().length < 100) missing.push('Full job description missing');
   if (job.active !== true) missing.push('Active posting not verified');
+  const statedRemote = permitsStatedRemoteRequirement(job,policy);
+  if (policy.applyWithStatedRemoteRequirement === true && job.track === 'remote' && /\bremote[\s-]friendly\b/i.test(job.evidence?.remote || '')) {
+    if (remoteWorkplaceConflict(job)) reject.push('Explicit workplace requirement conflicts with fully remote work');
+    if (job.remote === true && !/\b(?:fully|100%)\s+remote\b/i.test(job.evidence.remote)) missing.push('Remote-friendly evidence does not establish fully remote work; keep employer remote unknown');
+  }
   const optionalSchedule = key => policy.applyWithStatedAvailability === true && ['start','end','deadline','hours'].includes(key) && job[key] == null;
   for (const key of ['company', 'role', 'start', 'end', 'deadline', 'hours', 'indiaEligible', 'studentEligible', 'remote', 'duties', 'pay', 'fit']) {
-    if (optionalSchedule(key)) continue;
+    if (optionalSchedule(key) || (key === 'remote' && statedRemote)) continue;
     if (job[key] === null || job[key] === undefined || job[key] === '') missing.push(`Missing ${key}`);
     else {
       const quote = job.evidence?.[key];
@@ -76,7 +99,7 @@ export function assess(job, policy, today = dayInIndia()) {
   if (validDate(job.deadline) && job.deadline < today) reject.push('Application deadline passed');
   if (job.indiaEligible === false) reject.push('Not eligible from India');
   if (job.studentEligible === false) reject.push('Student requirements incompatible');
-  if (!['boolean'].includes(typeof job.indiaEligible) || typeof job.studentEligible !== 'boolean' || typeof job.remote !== 'boolean') missing.push('Eligibility requires explicit booleans');
+  if (!['boolean'].includes(typeof job.indiaEligible) || typeof job.studentEligible !== 'boolean' || (typeof job.remote !== 'boolean' && !statedRemote)) missing.push('Eligibility requires explicit booleans');
   if (!optionalSchedule('hours') && (!Number.isFinite(job.hours) || job.hours <= 0)) missing.push('Invalid hours');
   if (job.durationMonths != null) {
     const durationIssues=quantifiedEvidenceIssues(job,policy).filter(issue=>issue.startsWith('Duration in months'));
