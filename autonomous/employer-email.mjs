@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { htmlToText } from '../providers/_html-to-text.mjs';
 import { decodeEntities } from '../providers/_html-entities.mjs';
+import { captureRenderedRoleCard } from './employer-email-browser.mjs';
 
 const MAX_BYTES = 1024 * 1024;
 const mailbox = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$/;
@@ -106,7 +107,7 @@ async function boundedHTML(response) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function capturePage(target, channel, signal, fetcher) {
+async function capturePage(target, channel, signal, fetcher, { allowShell = false } = {}) {
   let current = target;
   for (let redirects = 0; redirects <= 2; redirects++) {
     const response = await fetcher(current.href, { redirect: 'manual', signal, headers: { Accept: 'text/html' } });
@@ -125,10 +126,15 @@ async function capturePage(target, channel, signal, fetcher) {
     const html = await boundedHTML(response);
     if (html === null) return null;
     const visible = htmlToText(html, { maxChars: 50000 });
-    if (!visible || visible.length >= 50000) return null;
+    if (visible.length >= 50000) return null;
     const evidence = applicationMailtoEvidence(html, channel);
     const text = evidence ? `${visible}\n${evidence}` : visible;
-    if (text.length >= 50000 || !text.toLowerCase().includes(channel.role.trim().replace(/\s+/g, ' ').toLowerCase()) || closedOrChallenge.test(text)) return null;
+    if (text.length >= 50000 || closedOrChallenge.test(text)) return null;
+    if (!text.toLowerCase().includes(channel.role.trim().replace(/\s+/g, ' ').toLowerCase())) {
+      if (allowShell && text.length < 1000 && /<div\s+id=["']root["']/i.test(html) && /<script\b/i.test(html) && !/<h[1-6]\b/i.test(html)) return { shell: true, url: current };
+      return null;
+    }
+    if (!visible) return null;
     return {html,text,url:current};
   }
   return null;
@@ -139,14 +145,27 @@ async function capturePage(target, channel, signal, fetcher) {
 // neither a guessed URL nor script text supplies that relationship.
 // The old postingHash is intentionally not consulted so changed evidence can
 // reach the later draft/send boundary, where stale approval is rejected.
-export async function fetchEmployerEmailPosting(url, channel, { fetcher = fetch } = {}) {
+export async function fetchEmployerEmailPosting(url, channel, { fetcher = fetch, renderedCapture = captureRenderedRoleCard } = {}) {
   const target = publicPage(url), applicationTarget = publicPage(channel?.sourceUrl);
   if (!target || !applicationTarget || channel?.verified !== true || channel.roleUrl !== url || applicationTarget.origin !== target.origin || channel.employerHost !== target.hostname) return null;
   if (typeof channel.recipient !== 'string' || !mailbox.test(channel.recipient) || typeof channel.quote !== 'string' || !channel.quote.trim() || !containsMailbox(channel.quote, channel.recipient) || typeof channel.role !== 'string' || !channel.role.trim()) return null;
+  const renderedMode = channel.captureMode === 'rendered-role-card';
+  if (renderedMode && (channel.sourceUrl !== url || typeof channel.applicationHref !== 'string' || !/^mailto:/i.test(channel.applicationHref) || channel.applicationHref.length > 8192 || !applicationMailtoEvidence(`<a href="${channel.applicationHref.replace(/"/g, '&quot;')}">Apply</a>`, channel))) return null;
   const signal = AbortSignal.timeout(15000);
   try {
-    const posting = await capturePage(target, channel, signal, fetcher);
+    let posting = await capturePage(target, channel, signal, fetcher, { allowShell: renderedMode });
     if (!posting) return null;
+    if (posting.shell) {
+      const rendered = await renderedCapture(url, channel);
+      if (!rendered || typeof rendered.html !== 'string' || rendered.html.length > 50000) return null;
+      if ([...anchorHrefs(rendered.html)].filter(href => href === channel.applicationHref).length !== 1) return null;
+      const visible = htmlToText(rendered.html, { maxChars: 50000 });
+      const evidence = applicationMailtoEvidence(rendered.html, channel);
+      if (!visible || !evidence || closedOrChallenge.test(visible) || !visible.toLowerCase().includes(channel.role.trim().replace(/\s+/g, ' ').toLowerCase())) return null;
+      const footer = typeof rendered.footerText === 'string' && rendered.footerText.length <= 2000 ? rendered.footerText : '';
+      posting = { html: rendered.html, text: `${visible}\n${evidence}${footer ? `\nEmployer footer identity (shared page footer): ${footer}` : ''}`, url: target };
+      if (posting.text.length >= 50000) return null;
+    }
     let application = posting;
     const linked = channel.sourceUrl !== url;
     if (linked) {
