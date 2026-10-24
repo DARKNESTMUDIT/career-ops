@@ -37,6 +37,21 @@ export function modelSelection(config = '', env = process.env) {
     return m ? ['-c', `${k}=${m[1]}`] : [];
   });
 }
+export function configuredPlannerModel(env = process.env) {
+  const configPath = path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml');
+  const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  const selection = modelSelection(config, env);
+  const model = selection.find(value => value.startsWith('model='));
+  return model ? JSON.parse(model.slice('model='.length)) : null;
+}
+
+export function planWithSolFallback(prompt) {
+  return planJSON(prompt, evaluationSchema, 180000, {
+    ...process.env,
+    CAREER_OPS_PLANNER_MODEL: 'gpt-6-sol',
+    CAREER_OPS_PLANNER_REASONING_EFFORT: 'medium',
+  });
+}
 export async function planJSON(prompt, schema = evaluationSchema, timeoutMs = 180000, env = process.env) {
   // Validate project overrides before creating files or starting a model process.
   modelSelection('', env);

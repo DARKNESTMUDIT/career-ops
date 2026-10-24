@@ -68,6 +68,33 @@ function choosePosting(html,url) {
   return matching[0];
 }
 
+// The public detail page keeps the role header and the full employer-written
+// description in separate siblings. Navigation, sign-in prompts and similar
+// jobs are outside these exact sections. Require a unique enclosing article
+// and unique role sections so a changed page layout cannot silently broaden
+// the evidence back to the whole body.
+function uniqueDiv(markup,className) {
+  const tags=[...markup.matchAll(/<\/?div\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi)];
+  const openings=tags.filter(m=>!/^<\/div/i.test(m[0]) && (attrs(m[0]).class||'').split(/\s+/).includes(className));
+  if(openings.length!==1)throw new Error(`Internshala role ${className} container missing or ambiguous`);
+  const opening=openings[0];let depth=0;
+  for(const tag of tags) {
+    if(tag.index<opening.index)continue;
+    depth+=/^<\/div/i.test(tag[0])?-1:1;
+    if(depth===0)return markup.slice(opening.index,tag.index+tag[0].length);
+  }
+  throw new Error(`Internshala role ${className} container truncated`);
+}
+function roleMarkup(bodyMarkup) {
+  const clean=bodyMarkup
+    .replace(/<!--[\s\S]*?-->/g,'')
+    .replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'');
+  const article=uniqueDiv(clean,'detail_view');
+  const meta=uniqueDiv(article,'internship_meta');
+  const details=uniqueDiv(article,'internship_details');
+  return {meta,details};
+}
+
 // Capture public source evidence only. No title-based eligibility decisions,
 // inferred locations, application interaction or merging of recommended roles.
 export async function fetchInternshalaPosting(url,{fetcher=fetch}={}) {
@@ -75,12 +102,14 @@ export async function fetchInternshalaPosting(url,{fetcher=fetch}={}) {
   const {html,finalUrl}=await publicHtml(url,fetcher);
   const bodyMarkup=html.match(/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i)?.[1];
   if(!bodyMarkup)throw new Error('Internshala HTML body missing or truncated');
-  const visible=jdHtmlToText(bodyMarkup);
-  if(/verify you are human|captcha challenge|access denied|checking your browser/i.test(visible))throw new Error('Internshala public page requires interaction');
+  if(/verify you are human|captcha challenge|access denied|checking your browser/i.test(jdHtmlToText(bodyMarkup)))throw new Error('Internshala public page requires interaction');
   const item=choosePosting(html,url);
   if(!item)return null;
+  const {meta,details}=roleMarkup(bodyMarkup);
+  const roleDetails=jdHtmlToText(details);
+  const visible=`${jdHtmlToText(meta)}\n${roleDetails}`;
   const description=jdHtmlToText(item.description);
-  if(description.length<100 || visible.length<100)throw new Error('Internshala full descriptions unavailable');
+  if(description.length<100 || roleDetails.length<100)throw new Error('Internshala full descriptions unavailable');
   if(/no longer accepting applications|applications? (?:are |is )?closed|position (?:is |has been )?(?:closed|filled)|internship (?:is )?closed|posting (?:has )?expired/i.test(`${description}\n${visible}`))throw new Error('Internshala posting closed or expired');
   if(item.validThrough) {
     const expires=Date.parse(item.validThrough);
@@ -89,7 +118,7 @@ export async function fetchInternshalaPosting(url,{fetcher=fetch}={}) {
   }
   const metadata={};
   for(const key of ['title','identifier','applicantLocationRequirements','jobLocationType','qualifications','educationRequirements','hiringOrganization','employmentType','datePosted','validThrough'])if(Object.hasOwn(item,key))metadata[key]=item[key];
-  const text=`Internshala public HTML body text (source: ${finalUrl}):\n${visible}\n\nInternshala exact-posting JobPosting JSON-LD description (independent source section; retain any differences from body text):\n${description}\n\nInternshala exact-posting JobPosting JSON-LD metadata (verbatim values; country codes are provider data):\n${JSON.stringify(metadata)}`;
+  const text=`Internshala exact-posting public role text (source: ${finalUrl}):\n${visible}\n\nInternshala exact-posting JobPosting JSON-LD description (independent source section; retain any differences from body text):\n${description}\n\nInternshala exact-posting JobPosting JSON-LD metadata (verbatim values; country codes are provider data):\n${JSON.stringify(metadata)}`;
   if(text.length>=TEXT_CAP || description.endsWith('…'))throw new Error('Internshala capture exceeds 50,000 characters or is truncated');
   return {url,sourceUrl:url,title:typeof item.title==='string'?item.title:'',text,method:'internshala-public-html-and-jsonld'};
 }

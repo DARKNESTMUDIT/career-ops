@@ -8,8 +8,10 @@ import { fetchSmartRecruitersPosting } from './smartrecruiters.mjs';
 import { fetchEmployerEmailPosting } from './employer-email.mjs';
 import { fetchMichmerPosting } from './michmer-form.mjs';
 import { fetchInternshalaPosting } from './internshala.mjs';
+import { fetchIsocodePosting, ISOCODE_POSTING_URL } from './isocode-posting.mjs';
 const exec = promisify(execFile);
 export async function fetchFullPosting(url,channel) {
+  if(url===ISOCODE_POSTING_URL)return fetchIsocodePosting(url);
   if(channel){const capture=await fetchEmployerEmailPosting(url,channel);if(!capture)throw new Error('Reviewed employer application page unavailable or changed');return capture;}
   if(adapterFor(url)==='michmer')return fetchMichmerPosting(url);
   if(new URL(url).hostname==='internshala.com') {

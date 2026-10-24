@@ -10,10 +10,10 @@ const records={
 };
 const urls={whatbytes:'https://internshala.com/internship/detail/work-from-home-product-management-internship-at-whatbytes1791393727',echotalk:'https://internshala.com/internship/detail/work-from-home-product-management-internship-at-echotalk1791960703'};
 const body='<h1>Product Management - Internship (WFH)</h1><p>Work from home</p><h2>Who can apply</h2><p>Only those candidates can apply who:</p><ol><li>are available for the work from home job/internship</li><li>have relevant skills and interests</li></ol>';
-function page({url=urls.whatbytes,posting=records.whatbytes,extra=[],canonical=true,breadcrumb=false,visible=body}={}) {
+function page({url=urls.whatbytes,posting=records.whatbytes,extra=[],canonical=true,breadcrumb=false,visible=body,outside=''}={}) {
  const schemas=[posting,...extra].filter(Boolean);
  if(breadcrumb)schemas.push({'@type':'BreadcrumbList',itemListElement:[{position:1,item:'https://internshala.com/'},{position:2,item:url}]});
- return `<html><head>${canonical?`<link rel='canonical' href='${url}'>`:''}${schemas.map(schema=>`<script type="application/ld+json">${JSON.stringify(schema)}</script>`).join('')}</head><body>${visible}</body></html>`;
+ return `<html><head>${canonical?`<link rel='canonical' href='${url}'>`:''}${schemas.map(schema=>`<script type="application/ld+json">${JSON.stringify(schema)}</script>`).join('')}</head><body>${outside}<div class="detail_view"><div class="internship_meta"><h1>Product Management - Internship (WFH)</h1><p>Work from home</p></div><div class="internship_details">${visible}</div></div></body></html>`;
 }
 function response(html,status=200,headers={}) {return new Response(html,{status,headers:{'content-type':'text/html',...headers}});}
 function fetcher(html){return async (url,options)=>{assert.equal(options.method,'GET');assert.equal(options.redirect,'manual');assert.ok(options.signal instanceof AbortSignal);return response(html);};}
@@ -29,9 +29,26 @@ test('retains contradictory body and structured qualifications without inventing
  const capture=await fetchInternshalaPosting(urls.whatbytes,{fetcher:fetcher(page({visible:body+'<p>Synthetic body requirement: all disciplines.</p>',posting:{...records.whatbytes,qualifications:'Synthetic structured requirement: Computer Science only.',educationRequirements:{'@type':'EducationalOccupationalCredential',credentialCategory:'Synthetic college enrolment'}}}))});
  assert.match(capture.text,/Synthetic body requirement: all disciplines/);assert.match(capture.text,/Synthetic structured requirement: Computer Science only/);assert.match(capture.text,/Synthetic college enrolment/);
 });
+test('navigation degrees and related roles stay out while role-only and JSON-LD requirements remain',async()=>{
+ const outside='<nav><a>Online MBA</a><a>Online BCA</a><a>Online MCA</a><a>Online BBA</a></nav><aside>Similar internships: Master degree required for a different role.</aside><footer>Degree courses</footer>';
+ const visible=body+'<p>Applicants must be pursuing a B.Tech degree in design engineering.</p>';
+ const capture=await fetchInternshalaPosting(urls.whatbytes,{fetcher:fetcher(page({visible,outside}))});
+ assert.doesNotMatch(capture.text,/Online MBA|Online BCA|Online MCA|Online BBA|Similar internships|different role|Degree courses/);
+ assert.match(capture.text,/Applicants must be pursuing a B.Tech degree in design engineering/);
+ assert.match(capture.text,/are Computer Science Engineering students/);
+});
 test('an unrelated recommended JobPosting is never merged into the exact addressed current posting',async()=>{
  const capture=await fetchInternshalaPosting(urls.whatbytes,{fetcher:fetcher(page({posting:{...records.whatbytes,url:urls.whatbytes},extra:[{...records.echotalk,url:urls.echotalk,description:'UNRELATED RECOMMENDED ROLE '.repeat(20),qualifications:'UNRELATED QUALIFICATION'}]}))});
  assert.match(capture.text,/Whatbytes/);assert.doesNotMatch(capture.text,/UNRELATED|Echotalk/);
+});
+test('a missing or duplicated production role container fails closed',async()=>{
+ const valid=page();
+ for(const html of [
+  valid.replace('class="detail_view"','class="other_view"'),
+  valid.replace('class="internship_meta"','class="other_meta"'),
+  valid.replace('class="internship_details"','class="other_details"'),
+  valid.replace('</body>','<div class="detail_view"><div class="internship_meta"></div><div class="internship_details"></div></div></body>'),
+ ])await assert.rejects(fetchInternshalaPosting(urls.whatbytes,{fetcher:fetcher(html)}),/container missing or ambiguous/);
 });
 test('rejects unmatched, ambiguous, malformed and unbound structured postings',async()=>{
  for(const html of [page({url:urls.echotalk}),page({posting:{...records.whatbytes,url:urls.echotalk}}),page({extra:[records.echotalk]}),page({canonical:false}),page().replace('"@type":"JobPosting"','malformed-json')])await assert.rejects(fetchInternshalaPosting(urls.whatbytes,{fetcher:fetcher(html)}),/identity|unmatched|ambiguous|malformed/);
