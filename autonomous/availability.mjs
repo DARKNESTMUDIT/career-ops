@@ -1,4 +1,4 @@
-import { permitsStatedRemoteRequirement, validStudentStatus } from './policy.mjs';
+import { permitsStatedRemoteRequirement, permitsStatedIndiaLocation, validStudentStatus } from './policy.mjs';
 
 const isoDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0,10) === value;
 const bounded = (value, maximum) => typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= maximum;
@@ -6,7 +6,7 @@ const bounded = (value, maximum) => typeof value === 'number' && Number.isFinite
 // These are candidate limits from primary profile configuration. An extracted
 // posting may select a track, but cannot supply or overwrite any availability.
 export function availabilityDisclosure(context, job) {
-  const remoteRequirement=[remoteRequirementDisclosure(context,job),studentStatusDisclosure(context,job)].filter(Boolean).join('\n\n');
+  const remoteRequirement=[remoteRequirementDisclosure(context,job),studentStatusDisclosure(context,job),indiaLocationDisclosure(context,job)].filter(Boolean).join('\n\n');
   if (context?.policy?.applyWithStatedAvailability !== true) return remoteRequirement;
   const track = job?.track;
   if (!['remote','summer'].includes(track)) throw new Error('Valid candidate availability track required');
@@ -24,6 +24,12 @@ export function availabilityDisclosure(context, job) {
 export function remoteRequirementDisclosure(context, job) {
   if (!permitsStatedRemoteRequirement(job,context?.policy)) return '';
   return 'I require a fully remote arrangement from India. The posting describes the role as remote-friendly; whether it supports fully remote work from India is not employer-confirmed. Please confirm this requirement can be accommodated.';
+}
+
+export function indiaLocationDisclosure(context, job) {
+  if(!permitsStatedIndiaLocation(job,context?.policy))return '';
+  if(!/\bIndia\b/.test(context?.profile?.candidate?.location || '') || context.policy.candidateCountry!=='India')throw new Error('Primary India location disclosure is missing or changed');
+  return 'I am based in India and require fully remote work from India. The posting does not confirm whether applicants based in India are eligible. Please confirm whether you can consider my application from India.';
 }
 
 export function studentStatusDisclosure(context, job) {

@@ -76,6 +76,22 @@ export function validStudentStatus(value) {
     /\b(?:bachelor|master|doctor|diploma|associate|mbbs|llb|llm|bba|bca|bms|bs|ba|be|bsc|bcom|btech|mtech|mba|mca|ma|ms|msc|b\.\s*(?:com|sc|tech|a|e)|m\.\s*(?:sc|tech|a))\b/i.test(value);
 }
 
+// Disclosure permits an omitted employer answer, never a published geographic
+// restriction. A country list, required residency or work authorization still
+// requires explicit verification instead of model inference.
+export function permitsStatedIndiaLocation(job, policy) {
+  if (policy?.applyWithStatedIndiaLocation !== true || policy.candidateCountry !== 'India' ||
+      job?.track !== 'remote' || job.indiaEligible !== null ||
+      !(job.remote === true || permitsStatedRemoteRequirement(job, policy)) || remoteWorkplaceConflict(job)) return false;
+  const jd=job.jd, quote=job.evidence?.remote;
+  if(typeof jd!=='string' || jd.length<100 || typeof quote!=='string' ||
+      !(jd.includes(quote) || exactExcerptList(quote,jd)))return false;
+  if(!/\bremote\b|work from (?:home|anywhere|wherever)|wherever you/i.test(quote))return false;
+  const restricted=/\b(?:eligible|permitted|supported|approved|excluded|restricted)\s+(?:countries|locations|regions)\b|\b(?:countries|locations|regions)\s*(?:eligible|supported|only|:)|\b(?:must|need to|required to)\s+(?:be\s+)?(?:based|reside|live|located|authori[sz]ed|eligible)\b|\b(?:residency|residence|citizenship|work authori[sz]ation|right to work|work permit)\b|\b(?:only|exclusively)\s+(?:in|from|within|for)\s+[A-Z]|\b(?:US|USA|U\.S\.|UK|EU|EEA|Europe|Canada|Australia|India|United States|United Kingdom)[ -]only\b|\b(?:not|no)\s+(?:available|open|eligible|hiring)\s+(?:in|to|from)\b|\b(?:cannot|can't|do not|don't)\s+(?:hire|accept|employ|support)\b/i;
+  const candidateGeography=/\b(?:candidates?|applicants?|employees?|interns?|hiring)\b[^.!?\n]{0,100}\b(?:based|located|residen\w*|citizen\w*|countries|country|within|outside|excluding|except)\b|\b(?:US|USA|UK|EU|EEA|Canada|Australia|Europe|American|European)[ -]based\b|\b(?:excluding|except|outside)\s+(?:India|Asia|South Asia)\b/i;
+  return !restricted.test(jd) && !candidateGeography.test(jd);
+}
+
 function studentQualificationConflict(job) {
   // This exception handles omitted eligibility, not inferred equivalence to a
   // published qualification. Do not let source headings hide a restriction.
@@ -101,6 +117,7 @@ export function assess(job, policy, today = dayInIndia()) {
   if (job.active !== true) missing.push('Active posting not verified');
   const statedRemote = permitsStatedRemoteRequirement(job,policy);
   const statedStudent = permitsStatedStudentStatus(job,policy);
+  const statedIndia = permitsStatedIndiaLocation(job,policy);
   if(policy.applyWithStatedStudentStatus===true && job.studentEligible===null && studentQualificationConflict(job))reject.push('Published student qualification requires explicit compatibility; status disclosure cannot waive it');
   if (policy.applyWithStatedRemoteRequirement === true && job.track === 'remote' && /\bremote[\s-]friendly\b/i.test(job.evidence?.remote || '')) {
     if (remoteWorkplaceConflict(job)) reject.push('Explicit workplace requirement conflicts with fully remote work');
@@ -108,7 +125,7 @@ export function assess(job, policy, today = dayInIndia()) {
   }
   const optionalSchedule = key => policy.applyWithStatedAvailability === true && ['start','end','deadline','hours'].includes(key) && job[key] == null;
   for (const key of ['company', 'role', 'start', 'end', 'deadline', 'hours', 'indiaEligible', 'studentEligible', 'remote', 'duties', 'pay', 'fit']) {
-    if (optionalSchedule(key) || (key === 'remote' && statedRemote) || (key === 'studentEligible' && statedStudent)) continue;
+    if (optionalSchedule(key) || (key === 'remote' && statedRemote) || (key === 'studentEligible' && statedStudent) || (key === 'indiaEligible' && statedIndia)) continue;
     if (job[key] === null || job[key] === undefined || job[key] === '') missing.push(`Missing ${key}`);
     else {
       const quote = job.evidence?.[key];
@@ -122,7 +139,7 @@ export function assess(job, policy, today = dayInIndia()) {
   if (validDate(job.deadline) && job.deadline < today) reject.push('Application deadline passed');
   if (job.indiaEligible === false) reject.push('Not eligible from India');
   if (job.studentEligible === false) reject.push('Student requirements incompatible');
-  if (!['boolean'].includes(typeof job.indiaEligible) || (typeof job.studentEligible !== 'boolean' && !statedStudent) || (typeof job.remote !== 'boolean' && !statedRemote)) missing.push('Eligibility requires explicit booleans');
+  if ((typeof job.indiaEligible !== 'boolean' && !statedIndia) || (typeof job.studentEligible !== 'boolean' && !statedStudent) || (typeof job.remote !== 'boolean' && !statedRemote)) missing.push('Eligibility requires explicit booleans');
   if (!optionalSchedule('hours') && (!Number.isFinite(job.hours) || job.hours <= 0)) missing.push('Invalid hours');
   if (job.durationMonths != null) {
     const durationIssues=quantifiedEvidenceIssues(job,policy).filter(issue=>issue.startsWith('Duration in months'));

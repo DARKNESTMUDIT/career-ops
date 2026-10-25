@@ -29,10 +29,11 @@ export function loadContext(root) {
   const applyWithStatedAvailability=sources['modes/_custom.md'].includes('<!-- career-ops:apply-with-stated-availability=true -->');
   const applyWithStatedRemoteRequirement=sources['modes/_custom.md'].includes('<!-- career-ops:apply-with-stated-remote-requirement=true -->');
   const applyWithStatedStudentStatus=sources['modes/_custom.md'].includes('<!-- career-ops:apply-with-stated-student-status=true -->');
+  const applyWithStatedIndiaLocation=sources['modes/_custom.md'].includes('<!-- career-ops:apply-with-stated-india-location=true -->');
   const fullScaleApplications=sources['modes/_custom.md'].includes('<!-- career-ops:full-scale-applications=true -->');
   const solTimeoutFallback=sources['modes/_custom.md'].includes('<!-- career-ops:sol-timeout-fallback=true -->');
   const deterministicSalesTriage=sources['modes/_custom.md'].includes('<!-- career-ops:deterministic-sales-triage=true -->');
-  const policy = { tracks: profile.availability, applyWithStatedAvailability, applyWithStatedRemoteRequirement, applyWithStatedStudentStatus, studentStatus:applyWithStatedStudentStatus?profile.application_disclosures?.student_status:null, fullScaleApplications, minimumFit: 4, unpaidFit: 4.5, maximumEvaluations: 30, maximumRunMs: 3600000, initialDailyLimit: fullScaleApplications ? null : 5, expandedDailyLimit: fullScaleApplications ? null : 10 };
+  const policy = { tracks: profile.availability, applyWithStatedAvailability, applyWithStatedRemoteRequirement, applyWithStatedStudentStatus, applyWithStatedIndiaLocation, candidateCountry:applyWithStatedIndiaLocation && /\bIndia\b/.test(profile.candidate?.location || '')?'India':null, studentStatus:applyWithStatedStudentStatus?profile.application_disclosures?.student_status:null, fullScaleApplications, minimumFit: 4, unpaidFit: 4.5, maximumEvaluations: 30, maximumRunMs: 3600000, initialDailyLimit: fullScaleApplications ? null : 5, expandedDailyLimit: fullScaleApplications ? null : 10 };
   const workflow=hash(['runner','policy','bundle','browser','rollout','ledger','gmail','gmail-auth','model','discovery','unstop','smartrecruiters','tracker','recovery','employer-email','employer-email-browser','availability','targeting','form-receipts','michmer-form','internshala','isocode-posting','hyperprospect-posting','duty-triage','../merge-tracker','../set-status'].map(name=>fs.readFileSync(new URL(`./${name}.mjs`,import.meta.url),'utf8')));
   return { profile, policy, sources, solTimeoutFallback, deterministicSalesTriage, blacklist:parseBlacklist(blacklistText), fingerprints: { cv: hash(sources['cv.md']), profile: hash(sources['config/profile.yml']), targeting: hash(sources['modes/_profile.md']), procedure: hash(sources['modes/_custom.md']), policy: hash(policy), availabilityMode:applyWithStatedAvailability?'declared':'strict', fullScaleApplications, blacklist:hash(blacklistText), emailChannels:hash(emailChannelsText), workflow } };
 }
@@ -66,7 +67,8 @@ export async function prepareApplication({root,job,context,resumePath}) {
 export async function run({ root = getCareerOpsRoot(), track = 'all', dryRun = true, evaluate = planJSON, fallbackEvaluate, fetchJD = fetchFullPosting, maxEvaluations = 30, renderPDF, prepare = prepareApplication, discover, jobIds } = {}) {
   const evaluator=evaluate;
   const evidencePrefix='EVIDENCE FORMAT: For fit, duties and remote evidence, prefer one contiguous verbatim excerpt. If multiple excerpts are necessary, separate exact source excerpts with semicolons; never concatenate noncontiguous sentences or invent bullet separators. Structured JobPosting metadata and description are source evidence, including degree restrictions; preserve conflicts rather than silently ignoring them. When a full structured title includes Internship, use that exact full title for evidence.role rather than a shortened heading. When structured ISO dates exist, quote the exact ISO value for evidence.deadline rather than an alternative display date.\n';
-  evaluate=prompt=>evaluator(evidencePrefix+prompt);
+  const indiaPolicyPrompt='When trusted policy.applyWithStatedIndiaLocation is true, otherwise suitable remote roles that omit country eligibility may keep indiaEligible null. Never infer India acceptance from remote work. Quote published restrictions, keep explicit country exclusions incompatible, and preserve country unknowns. The outgoing packet will disclose candidate location India and request employer confirmation. This narrow omission policy supersedes the general explicit-India requirement only when its deterministic gates pass.\n';
+  evaluate=prompt=>evaluator(evidencePrefix+indiaPolicyPrompt+prompt);
   const fallbackEvaluator=fallbackEvaluate || (evaluator===planJSON ? planWithSolFallback : null);
   if (!['all','remote','summer'].includes(track)) throw new Error('Invalid track');
   if (!dryRun && !Object.values(ADAPTER_VALIDATION).some(Boolean)) throw new Error('Live adapters are not yet validated; runner remains in dry-run rollout');
@@ -100,7 +102,7 @@ export async function run({ root = getCareerOpsRoot(), track = 'all', dryRun = t
       }
       result.evaluationAttempts++;
       try {
-        const output=await fallbackEvaluator(evidencePrefix+prompt);
+        const output=await fallbackEvaluator(evidencePrefix+indiaPolicyPrompt+prompt);
         evaluationBlock={...evaluationBlock,fallback:{model:'gpt-6-sol',status:'available'}};
         ledger.set('evaluationBlock',evaluationBlock);
         result.modelFallback='gpt-6-sol';
