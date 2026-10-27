@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {internshipIdentity,intentDigest,inspectInternshalaReceipt} from './internshala-receipts.mjs';
+import {installInternshalaNativeBody} from './internshala-native-body.mjs';
 
 // Unregistered capture component, NOT a submission adapter. It never fills,
 // uploads, clicks, reserves an application, updates outcomes or grants credit.
@@ -87,7 +88,10 @@ export async function captureInternshalaNativeSubmission(page,{ledger,id,intentF
     pending.add(task);task.finally(()=>pending.delete(task));
   };
   page.on('response',responseHandler);
-  try {await page.route('**/*',routeHandler);} catch(error){page.off('response',responseHandler);throw error;}
+  try {
+    await page.route('**/*',routeHandler);
+    await installInternshalaNativeBody(page,identity.submitUrl);
+  } catch(error){page.off('response',responseHandler);await page.unroute('**/*',routeHandler);throw error;}
   return {
     proofDir,
     async stop() {

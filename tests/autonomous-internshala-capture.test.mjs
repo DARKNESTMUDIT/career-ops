@@ -14,6 +14,7 @@ class NativePageFixture extends EventEmitter {
   url(){return this.source;}
   async route(pattern,fn){this.handler=fn;}
   async unroute(){this.handler=null;}
+  async evaluate(){return {installed:true};} // Browser transport covered separately.
 }
 function fixture(t) {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-capture-')),ledger=new Ledger(root),token=ledger.acquire();
