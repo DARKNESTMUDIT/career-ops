@@ -52,7 +52,20 @@ export function planWithSolFallback(prompt) {
     CAREER_OPS_PLANNER_REASONING_EFFORT: 'medium',
   });
 }
-export async function planJSON(prompt, schema = evaluationSchema, timeoutMs = 180000, env = process.env) {
+
+// A stalled CLI can print a quota/auth failure and then keep reconnecting.
+// Preserve that cause even when the outer deadline eventually kills it, so a
+// timeout cannot accidentally authorize another model after usage exhaustion.
+export function plannerFailure(stderr,{killed=false,code=null}={}) {
+  const text=String(stderr);
+  const status=/(?:unexpected\s+status|http(?:\s+status)?|status(?:\s+code)?)[\s:=]*(401|403|429)\b/i.exec(text)?.[1];
+  const unavailable=status || /(?:usage|rate|quota)\s+limit\s+(?:reached|exceeded)|(?:hit|reached|exceeded)\s+(?:your\s+|the\s+)?(?:usage|rate|quota)\s+limit|quota\s+(?:exceeded|exhausted)|insufficient_quota|rate_limit_exceeded|invalid_api_key|authentication\s+(?:failed|expired|required)|not\s+(?:logged|signed)\s+in|please\s+(?:log|sign)\s+in/i.test(text);
+  if(unavailable)return new Error(`Model usage/authentication unavailable${status?` (HTTP ${status})`:''}`);
+  if(killed)return new Error(`Model timeout${/reconnect(?:ing)?|stream disconnected/i.test(text)?' (connection retries observed)':''}`);
+  // Existing non-timeout CLI errors retain their established closed behavior.
+  return new Error(/limit|quota|usage|auth|login|sign in/i.test(text)?'Model usage/authentication unavailable':`Model failed (${code})`);
+}
+export async function planJSON(prompt, schema = evaluationSchema, timeoutMs = 180000, env = process.env, {spawnProcess=spawn}={}) {
   // Validate project overrides before creating files or starting a model process.
   modelSelection('', env);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'career-planner-'));
@@ -62,13 +75,17 @@ export async function planJSON(prompt, schema = evaluationSchema, timeoutMs = 18
   const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
   try {
     await new Promise((resolve, reject) => {
-      const child = spawn('codex', ['--ask-for-approval','never','exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only', '-c', 'features.shell_tool=false', ...modelSelection(config, env), '--output-schema', schemaPath, '--output-last-message', resultPath, '-'], { cwd: dir, stdio: ['pipe','pipe','pipe'] });
-      let error = '', killed = false;
+      const child = spawnProcess('codex', ['--ask-for-approval','never','exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only', '-c', 'features.shell_tool=false', ...modelSelection(config, env), '--output-schema', schemaPath, '--output-last-message', resultPath, '-'], { cwd: dir, stdio: ['pipe','pipe','pipe'] });
+      let error = '', killed = false, unavailableCause = null;
       const timer = setTimeout(() => { killed = true; child.kill('SIGKILL'); }, timeoutMs);
       child.stdout.on('data', () => {});
-      child.stderr.on('data', d => { error = (error + d.toString()).slice(-1500); });
+      child.stderr.on('data', d => {
+        error = (error + d.toString()).slice(-1500);
+        const observed=plannerFailure(error,{killed:true});
+        if(observed.message.startsWith('Model usage/authentication unavailable'))unavailableCause=observed;
+      });
       child.on('error', e => { clearTimeout(timer); reject(e); });
-      child.on('close', code => { clearTimeout(timer); code === 0 && !killed ? resolve() : reject(new Error(killed ? 'Model timeout' : /limit|quota|usage|auth|login|sign in/i.test(error) ? 'Model usage/authentication unavailable' : `Model failed (${code})`)); });
+      child.on('close', code => { clearTimeout(timer); code === 0 && !killed ? resolve() : reject(unavailableCause || plannerFailure(error,{killed,code})); });
       child.stdin.on('error', () => {});
       child.stdin.end(prompt);
     });
