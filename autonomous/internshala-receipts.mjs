@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import {INTERNSHALA_HISTORY_VERSION,verifyNextReceipt} from './internshala-history.mjs';
+export {assertInternshalaHistoryBefore,internshalaHistoryDigest} from './internshala-history.mjs';
 
 // Deliberately unregistered. This module checks an existing native-browser
 // capture; it cannot navigate, submit, retry, or award an application receipt.
@@ -71,6 +73,7 @@ function plainHtml(value) {
 
 function historyReceipt(history, intent, entry) {
   if (!history || typeof history !== 'object') return null;
+  if(history.version!==undefined)return history.version===INTERNSHALA_HISTORY_VERSION ? verifyNextReceipt(history.before,history.after,intent,entry):null;
   try {
     const page=new URL(history.pageUrl);
     if(page.protocol!=='https:' || page.hostname!=='internshala.com' || page.pathname!=='/student/applications/' || page.username || page.password || page.port) return null;
@@ -118,10 +121,10 @@ function checkIntent(intent, sealedDigest, reasons) {
     else {
       for(const [name,field] of Object.entries(protocol)) {
         const hidden=Object.hasOwn(fixed,name) || name==='csrf_test_name';
-        const valid=hidden ? field?.kind==='observed-hidden' && (name==='csrf_test_name' ? typeof field.value==='string' && field.value.length>0 : field.value===fixed[name]) : ['last_working_date','confirm_availability_textarea'].includes(name) && field?.kind==='inactive-empty' && field.value==='';
+        const valid=hidden ? field?.kind==='observed-hidden' && (name==='csrf_test_name' ? typeof field.value==='string' && field.value.length>0 : field.value===fixed[name]) : name==='submit' ? field?.kind==='observed-submit' && field.value==='Submit' : ['last_working_date','confirm_availability_textarea'].includes(name) && field?.kind==='inactive-empty' && field.value==='';
         if(!valid || Object.hasOwn(intent.fields ?? {},name) || name===intent.jobIdField || name===pdf?.fieldName)reasons.push('invalid_protocol_fields');
       }
-      if([...Object.keys(fixed),'csrf_test_name'].some(name=>!Object.hasOwn(protocol,name)))reasons.push('missing_protocol_fields');
+      if([...Object.keys(fixed),'csrf_test_name','submit'].some(name=>!Object.hasOwn(protocol,name)))reasons.push('missing_protocol_fields');
       const availability=intent.fields?.confirm_availability?.value;
       const required=['confirm_availability',...(availability==='no'?['confirm_availability_textarea']:availability==='serving-notice'?['last_working_date']:availability==='to-serve-notice'?['notice_period']:[])];
       if(!['yes','no','serving-notice','to-serve-notice'].includes(availability) || Object.keys(intent.fields ?? {}).length!==required.length || required.some(name=>!Object.hasOwn(intent.fields ?? {},name)) || ['last_working_date','confirm_availability_textarea'].some(name=>!Object.hasOwn(intent.fields ?? {},name) && !Object.hasOwn(protocol,name)))reasons.push('native_required_answers_missing');

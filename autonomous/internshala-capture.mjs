@@ -56,12 +56,24 @@ export async function captureInternshalaNativeSubmission(page,{ledger,id,intentF
   const seal=durableJSON(path.join(proofDir,'capture-intent.json'),{intent,sealedIntentSha256,attempt:attempt.id,ledgerJobId:id});
   ledger.event(id,'internshala-capture-started',{attempt:attempt.id,seal});
   let matchedRequest=null,entry=null,continued=false,stopped=false;
-  const failures=[],pending=new Set();
+  const failures=[],deniedMutations=[],pending=new Set();
   const persist=(name,value)=>durableJSON(path.join(proofDir,name),value);
   const failed=(where,error)=>{failures.push({where,error:String(error?.message || error)});};
   const routeHandler=async route=>{
     const request=route.request(),method=request.method(),url=request.url();
     if(['GET','HEAD'].includes(method))return route.continue();
+    // Portal analytics and presence calls are not part of an application.
+    // Deny and preserve them without mistaking a successfully blocked request
+    // for an uncertain application send. Every application endpoint remains
+    // subject to the exact sealed-body and single-send checks below.
+    let applicationEndpoint=false;
+    try {applicationEndpoint=new URL(url).pathname.startsWith('/application/submit/');}catch{}
+    if(!applicationEndpoint) {
+      const denied={method,url,at:new Date().toISOString()};
+      deniedMutations.push(denied);
+      try {persist(`denied-${randomUUID()}.json`,denied);}catch(error){failed('denied-proof',error);}
+      return route.abort('blockedbyclient');
+    }
     try {
       if(stopped || method!=='POST' || url!==identity.submitUrl || matchedRequest || !ledger.ownsLock() || ledger.get('paused') || ledger.get('integrityFailure') || ledger.job(id)?.state!=='submitting' || intentDigest(JSON.parse(fs.readFileSync(intentFile,'utf8')))!==sealedIntentSha256)throw Error('Unapproved or repeated native mutation');
       const bytes=request.postDataBuffer();
@@ -113,7 +125,7 @@ export async function captureInternshalaNativeSubmission(page,{ledger,id,intentF
       page.off('response',responseHandler);
       await Promise.all([...pending]);
       const har={log:{entries:entry?[entry]:[]}};
-      const result={attempt:attempt.id,continued,har,failures,receiptCertified:false,requiresExactHistory:true};
+      const result={attempt:attempt.id,continued,har,failures,deniedMutations,receiptCertified:false,requiresExactHistory:true};
       persist('capture.json',result);
       // Leaving submitting/uncertain reconciliation to the integrated caller
       // prevents this recorder from manufacturing a receipt or safe retry.

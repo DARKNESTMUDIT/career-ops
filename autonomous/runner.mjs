@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {randomUUID} from 'node:crypto';
 import * as yaml from 'js-yaml';
 import { getCareerOpsRoot, resolveTrackerPath } from '../path-resolver.mjs';
 import { fetchFullPosting } from './discovery.mjs';
@@ -17,6 +18,8 @@ import { prepareMichmer, submitMichmer } from './michmer-form.mjs';
 import { retryTrackerSync } from './tracker.mjs';
 import { parseBlacklist, findBlacklistEntry } from '../scan.mjs';
 import { triageInternshalaSalesDuties } from './duty-triage.mjs';
+import {withInternshalaApplicationSession,observeInternshalaApplication,prepareInternshalaApplication,submitInternshalaPrepared,compareInternshalaCandidatePreparation,validateInternshalaApplicationAnswers,validateInternshalaPlatformResumeReview} from './internshala-application.mjs';
+import {createInternshalaHistorySnapshot} from './internshala-history.mjs';
 
 export function loadContext(root) {
   const sources = Object.fromEntries(['cv.md','config/profile.yml','modes/_profile.md','modes/_custom.md'].map(p => [p, fs.readFileSync(path.join(root, p), 'utf8')]));
@@ -34,7 +37,7 @@ export function loadContext(root) {
   const solTimeoutFallback=sources['modes/_custom.md'].includes('<!-- career-ops:sol-timeout-fallback=true -->');
   const deterministicSalesTriage=sources['modes/_custom.md'].includes('<!-- career-ops:deterministic-sales-triage=true -->');
   const policy = { tracks: profile.availability, applyWithStatedAvailability, applyWithStatedRemoteRequirement, applyWithStatedStudentStatus, applyWithStatedIndiaLocation, candidateCountry:applyWithStatedIndiaLocation && /\bIndia\b/.test(profile.candidate?.location || '')?'India':null, studentStatus:applyWithStatedStudentStatus?profile.application_disclosures?.student_status:null, fullScaleApplications, minimumFit: 4, unpaidFit: 4.5, maximumEvaluations: 30, maximumRunMs: 3600000, initialDailyLimit: fullScaleApplications ? null : 5, expandedDailyLimit: fullScaleApplications ? null : 10 };
-  const workflow=hash(['runner','policy','bundle','browser','rollout','ledger','gmail','gmail-auth','model','discovery','unstop','smartrecruiters','tracker','recovery','employer-email','employer-email-browser','availability','targeting','form-receipts','michmer-form','internshala','isocode-posting','hyperprospect-posting','duty-triage','../merge-tracker','../set-status'].map(name=>fs.readFileSync(new URL(`./${name}.mjs`,import.meta.url),'utf8')));
+  const workflow=hash(['runner','policy','bundle','browser','rollout','ledger','gmail','gmail-auth','model','discovery','unstop','smartrecruiters','tracker','recovery','employer-email','employer-email-browser','availability','targeting','form-receipts','michmer-form','internshala','internshala-application','internshala-session','internshala-native-body','internshala-transport','internshala-capture','internshala-receipts','internshala-history','isocode-posting','hyperprospect-posting','duty-triage','../merge-tracker','../set-status','../autonomous-runner'].map(name=>fs.readFileSync(new URL(`./${name}.mjs`,import.meta.url),'utf8')));
   return { profile, policy, sources, solTimeoutFallback, deterministicSalesTriage, blacklist:parseBlacklist(blacklistText), fingerprints: { cv: hash(sources['cv.md']), profile: hash(sources['config/profile.yml']), targeting: hash(sources['modes/_profile.md']), procedure: hash(sources['modes/_custom.md']), policy: hash(policy), availabilityMode:applyWithStatedAvailability?'declared':'strict', fullScaleApplications, blacklist:hash(blacklistText), emailChannels:hash(emailChannelsText), workflow } };
 }
 export function trackerIdentities(root) {
@@ -53,7 +56,29 @@ export function importPipeline(ledger, root) {
 export function renderResume(context) {
   return tailoredResume(context,{role:'',jd:''});
 }
-export async function prepareApplication({root,job,context,resumePath}) {
+export function internshalaPreparationInputs(ledger,id,context) {
+  const item=ledger?.job(id);
+  if(!ledger?.ownsLock() || !item || adapterFor(item.url)!=='internshala')throw new Error('Exact native role and owned preparation lock required');
+  const answers=item.payload.internshalaAnswers,platformResumeReview=item.payload.internshalaPlatformResumeReview;
+  if(!platformResumeReview?.path || !/^[a-f0-9]{64}$/.test(platformResumeReview.sha256 || ''))throw new Error('Stored reviewed platform resume proof required; no conformance is inferred');
+  validateInternshalaApplicationAnswers({context,job:item.payload,answers});
+  const file=fs.realpathSync(platformResumeReview.path),base=fs.realpathSync(ledger.dir),stat=fs.statSync(file);
+  if(!file.startsWith(base+path.sep) || !stat.isFile() || (stat.mode&0o077))throw new Error('Private reviewed platform resume artifact required');
+  const bytes=fs.readFileSync(file);
+  if(hash(bytes.toString('utf8'))!==platformResumeReview.sha256)throw new Error('Stored reviewed platform resume artifact changed');
+  const review=JSON.parse(bytes.toString('utf8'));
+  validateInternshalaPlatformResumeReview({review,observedSha256:review.observedSha256,context});
+  return {answers,platformResumeReview};
+}
+export async function prepareApplication({root,job,context,resumePath,bundle,ledger,id}) {
+  if(adapterFor(job.sourceUrl)==='internshala') {
+    const inputs=internshalaPreparationInputs(ledger,id,context);
+    if(ledger.job(id).url!==job.sourceUrl)throw new Error('Native preparation source mismatch');
+    return withInternshalaApplicationSession(root,async page=>{
+      await observeInternshalaApplication(page,{ledger,id,directory:path.join(ledger.dir,`internshala-observation-${randomUUID()}`)});
+      return prepareInternshalaApplication(page,{ledger,id,context,bundle:bundle || path.dirname(resumePath),...inputs});
+    });
+  }
   if (!adapterFor(job.sourceUrl)) throw new Error('Employer application channel required; discovery-only source');
   return withApplicationBrowser(root, async page => {
     if(adapterFor(job.sourceUrl)==='michmer') {
@@ -176,7 +201,7 @@ export async function run({ root = getCareerOpsRoot(), track = 'all', dryRun = t
           ledger.update(item.id,'ready',{bundle:dir,dryRunComplete:true,applicationKind:'email',reasons:[]});result.complete++;
           identities.add(identityKey(job.company,job.role));continue;
         }
-        const prepared = await prepare({root,job,context,resumePath:bundle.resumePath,bundle:dir});
+        const prepared = await prepare({root,job,context,resumePath:bundle.resumePath,bundle:dir,ledger,id:item.id});
         if (!prepared.complete) throw new Error(`Application incomplete: ${prepared.issues.join('; ')}`);
         sealBundle(dir,job,prepared);
         ledger.update(item.id,'ready',{bundle:dir,dryRunComplete:true,applicationKind:'form',reasons:[]}); result.complete++;
@@ -226,6 +251,26 @@ export async function submitReady({root,ledger,context,track='all',fetchJD=fetch
         if(!verifyBundle(item.payload.bundle,{...current.fingerprints,posting:hash(jd || '')}) || assess({...item.payload,jd,active:true},current.policy).state!=='eligible' || quantifiedEvidenceIssues(item.payload).length)throw new Error('Email eligibility or sources changed; new dry run required');
         if(trackerIdentities(root).has(identityKey(item.payload.company,item.payload.role)))throw new Error('Role already exists in canonical tracker');
         await sendApplicationEmail({root,ledger,id:item.id,context:current,channel:loadEmailChannel(root,item.payload)});
+      } else if(adapter==='internshala') {
+        // Source, primary facts and duplicate gates precede opening the native
+        // page. A browser refresh may change protocol fields, never content.
+        const current=loadContext(root),capture=await fetchJD(item.url),jd=capture?.text ?? capture?.description;
+        const fingerprints={...current.fingerprints,posting:hash(jd || '')};
+        if(item.payload.dryRunComplete!==true || !verifyBundle(item.payload.bundle,fingerprints) || assess({...item.payload,jd,active:true},current.policy).state!=='eligible' || quantifiedEvidenceIssues({...item.payload,jd}).length)throw new Error('Native source, primary facts or eligibility changed; new preparation required');
+        if(findBlacklistEntry(current.blacklist,item.payload.company,item.url))throw new Error('Company is on the current do-not-apply list');
+        if(trackerIdentities(root).has(identityKey(item.payload.company,item.payload.role)))throw new Error('Role already exists in canonical tracker');
+        const inputs=internshalaPreparationInputs(ledger,item.id,current);
+        const previous=JSON.parse(fs.readFileSync(path.join(item.payload.bundle,'answers.json'),'utf8'));
+        await withInternshalaApplicationSession(root,async page=>{
+          await observeInternshalaApplication(page,{ledger,id:item.id,directory:path.join(ledger.dir,`internshala-live-observation-${randomUUID()}`)});
+          const prepared=await prepareInternshalaApplication(page,{ledger,id:item.id,context:current,bundle:item.payload.bundle,...inputs});
+          compareInternshalaCandidatePreparation(previous,prepared);
+          // Existing readiness came from the original complete dry run. This
+          // reseal binds only freshly observed browser protocol and artifacts.
+          sealBundle(item.payload.bundle,item.payload,prepared);
+          const historySnapshot=createInternshalaHistorySnapshot({directory:path.join(ledger.dir,`internshala-history-${randomUUID()}`),root:ledger.dir});
+          await submitInternshalaPrepared(page,{root,ledger,id:item.id,context:current,prepared,bundle:item.payload.bundle,historySnapshot});
+        });
       } else if(adapter==='michmer') {
         await withApplicationBrowser(root,async page=>{
           await page.goto(item.url,{waitUntil:'domcontentloaded',timeout:30000});

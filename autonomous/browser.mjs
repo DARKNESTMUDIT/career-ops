@@ -4,10 +4,12 @@ import { chromium } from 'playwright';
 import { hash } from './policy.mjs';
 import { authorizeSubmission } from './rollout.mjs';
 import { inspectLeverForm } from './form-receipts.mjs';
+import {ARH_NATIVE_SLUG} from './internshala-transport.mjs';
 
 export function adapterFor(url) {
   const u = new URL(url);
   if (u.protocol !== 'https:' || u.username || u.password || u.port) return null;
+  if(url===`https://internshala.com/internship/detail/${ARH_NATIVE_SLUG}`)return 'internshala';
   if (u.hostname === 'michmer.in' && u.pathname === '/careers' && !u.search && (!u.hash || u.hash === '#product-management')) return 'michmer';
   if (/^(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io$/.test(u.hostname)) return 'greenhouse';
   if (/^jobs(?:\.eu)?\.lever\.co$/.test(u.hostname)) return 'lever';
@@ -43,6 +45,7 @@ export async function snapshotFields(page) {
   }));
 }
 export async function prepareForm(page, profile, resumePath) {
+  if(adapterFor(page.url())==='internshala')throw new Error('Internshala requires reserved native preparation; generic filling is forbidden');
   const text = await page.locator('body').innerText();
   if (/verify you are human|captcha challenge|sign in to apply|log in to apply|two.factor authentication/i.test(text)) throw new Error('Login, MFA or CAPTCHA requires interaction');
   let providerContract;
@@ -96,6 +99,7 @@ export async function uploadedHash(loc) {
 export function sameJobChannel(a, b) {
   try {
     const x = new URL(a), y = new URL(b);
+    if(adapterFor(a)==='internshala')return a===b;
     const clean = u => u.pathname.replace(/\/application\/?$|\/apply\/?$|\/$/g,'');
     return !!adapterFor(a) && x.origin === y.origin && clean(x) === clean(y);
   } catch { return false; }
@@ -110,6 +114,7 @@ export async function withApplicationBrowser(root, fn) {
 
 export async function openForm(page, url) {
   const adapter = adapterFor(url); if (!adapter) throw new Error('Unsupported submission adapter');
+  if(adapter==='internshala')throw new Error('Internshala requires original-script native observation before navigation');
   await page.goto(url, { waitUntil:'domcontentloaded', timeout:30000 });
   if (!sameJobChannel(page.url(), url)) throw new Error('Unexpected application redirect');
   if (!(await page.locator('input[type="email"]').count())) {
@@ -129,6 +134,7 @@ export async function openForm(page, url) {
 }
 
 export async function submitPrepared(page, { ledger, id, context, prepared, resumePath, bundle, limit }) {
+  if(adapterFor(ledger.job(id)?.url)==='internshala')throw new Error('Internshala requires the guarded native submission adapter');
   // Every caller, including direct helper users, must pass the rollout gate.
   // Do this before touching the page or reserving an external action.
   authorizeSubmission(ledger, id, context.fingerprints, adapterFor(ledger.job(id)?.url));

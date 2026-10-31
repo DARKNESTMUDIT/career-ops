@@ -12,6 +12,29 @@ import { fileURLToPath } from 'node:url';
 import { boundedProcess } from './autonomous/process.mjs';
 import { discoverFresh } from './autonomous/scan.mjs';
 import { reconcileMichmerForm } from './autonomous/michmer-form.mjs';
+import {adapterFor} from './autonomous/browser.mjs';
+import {reconcileInternshalaApplication,withInternshalaApplicationSession,inspectInternshalaReconciliationState} from './autonomous/internshala-application.mjs';
+import {createInternshalaHistorySnapshot} from './autonomous/internshala-history.mjs';
+import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+
+export async function reconcileApplicationForm({root,ledger,id}) {
+  if(!ledger.ownsLock())throw new Error('Form reconciliation requires active runner lock');
+  const job=ledger.job(id),attempt=ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id);
+  if(!job || !attempt)throw new Error('Existing durable form attempt required');
+  const adapter=adapterFor(job.url);
+  if(adapter==='internshala' && typeof job.payload.internshalaIntentFile==='string') {
+    if(['confirmed','rejected'].includes(attempt.outcome))return reconcileInternshalaApplication({root,ledger,id});
+    if(attempt.outcome!=='intent' || !['submitting','uncertain'].includes(job.state))throw new Error('Unresolved native intent required');
+    if(!inspectInternshalaReconciliationState({ledger,id}).needsHistory)return reconcileInternshalaApplication({root,ledger,id});
+    return withInternshalaApplicationSession(root,async page=>{
+      const historySnapshot=createInternshalaHistorySnapshot({directory:path.join(ledger.dir,`internshala-reconcile-history-${randomUUID()}`),root:ledger.dir});
+      return reconcileInternshalaApplication({root,ledger,id,page,historySnapshot});
+    });
+  }
+  if(adapter==='michmer' && job.payload.formIntent?.provider==='michmer')return reconcileMichmerForm({ledger,id});
+  throw new Error('Unsupported or mismatched form reconciliation provider');
+}
 export async function main() {
 const args = process.argv.slice(2), operation = args[0] || 'status';
 try {
@@ -60,7 +83,7 @@ try {
     finally {if(token)ledger.release(token);ledger.close();}
   } else if (operation === 'form-reconcile') {
     const ledger=new Ledger(root);let token;
-    try {token=ledger.acquire();console.log(JSON.stringify(await reconcileMichmerForm({ledger,id:args[1]})));}
+    try {token=ledger.acquire();console.log(JSON.stringify(await reconcileApplicationForm({root,ledger,id:args[1]})));}
     finally {if(token)ledger.release(token);ledger.close();}
   } else if (operation === 'recover') {
     const ledger=new Ledger(root); let token;

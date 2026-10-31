@@ -1,11 +1,15 @@
 import { dayInIndia, currentSchedule } from './policy.mjs';
 import { verifyBundle } from './bundle.mjs';
+import {internshipIdentity} from './internshala-receipts.mjs';
+import {ARH_NATIVE_SLUG} from './internshala-transport.mjs';
 
 // Validation is an explicit engineering gate, independent of evaluations.
 // Gmail dispatch/reconciliation, canonical tracker sync and integrity recovery
-// are certified by autonomous-gmail-integration.test.mjs. Form acceptance and
-// reconciliation remain uncertified; no stage counter can enable them.
-export const ADAPTER_VALIDATION = Object.freeze({ greenhouse:false, lever:false, ashby:false, gmail:true, michmer:true });
+// are certified by autonomous-gmail-integration.test.mjs. The Internshala gate
+// covers only the exact ARH native contract below: observed original provider
+// script/form and complete authenticated history, plus native-wire, receipt,
+// tracker and recovery checks. Engineering fixtures never count as applications.
+export const ADAPTER_VALIDATION = Object.freeze({ greenhouse:false, lever:false, ashby:false, gmail:true, michmer:true, internshala:true });
 export function rolloutStatus(ledger, fingerprints, today = dayInIndia()) {
   const jobs = ledger.jobs();
   const current = j => Object.entries(fingerprints || {}).every(([k,v]) => j.payload.fingerprints?.[k] === v);
@@ -36,6 +40,9 @@ export function rolloutStatus(ledger, fingerprints, today = dayInIndia()) {
 }
 
 export function authorizeSubmission(ledger, id, fingerprints, adapter, today = dayInIndia()) {
+  // Certification of this one observed form can never authorize another role
+  // merely because a caller supplies the same provider adapter name.
+  if(adapter==='internshala' && internshipIdentity(ledger.job(id)?.url)?.slug!==ARH_NATIVE_SLUG)throw new Error('Internshala certification scope is limited to the observed ARH role');
   const state = rolloutStatus(ledger, fingerprints, today);
   if (!ADAPTER_VALIDATION[adapter]) throw new Error(`Live adapter validation pending: ${adapter}`);
   if (!ledger.ownsLock()) throw new Error('Submission requires the active runner lock');

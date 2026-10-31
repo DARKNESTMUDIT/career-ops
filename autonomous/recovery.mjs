@@ -3,6 +3,17 @@ import { canonicalizeTrackerPath, openTrackerTransaction } from '../tracker-util
 import { detectColumns, parseTrackerRow } from '../tracker-parse.mjs';
 import { identityKey } from './policy.mjs';
 import { verifyMichmerRejectedReceipt, michmerRejectionSnapshot } from './michmer-form.mjs';
+import {verifyInternshalaRejectedReceipt,internshalaRejectionSnapshot,verifyInternshalaApplicationReceipt} from './internshala-application.mjs';
+import {adapterFor} from './browser.mjs';
+
+export function rejectedFormProvider(ledger,id) {
+  const job=ledger.job(id),attempt=ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id);
+  let receipt;try {receipt=JSON.parse(attempt?.receipt);}catch {throw new Error('Invalid rejected form receipt');}
+  if(receipt?.kind!=='form-rejected')throw new Error('Recognized rejected form receipt required');
+  if(receipt.provider==='internshala' && adapterFor(job?.url)==='internshala' && typeof job.payload.internshalaIntentFile==='string')return {verify:verifyInternshalaRejectedReceipt,snapshot:internshalaRejectionSnapshot};
+  if(receipt.provider==='michmer' && adapterFor(job?.url)==='michmer' && job.payload.formIntent?.provider==='michmer')return {verify:verifyMichmerRejectedReceipt,snapshot:michmerRejectionSnapshot};
+  throw new Error('Unsupported or mismatched rejected form provider');
+}
 
 const sentStates = new Set(['Applied','Responded','Interview','Offer','Hired','Rejected','Discarded']);
 
@@ -16,7 +27,8 @@ export async function resolveIntegrityPause(root, ledger) {
   try {
     const rejected = new Map();
     for (const attempt of ledger.db.prepare("SELECT * FROM attempts WHERE outcome='rejected'").all()) {
-      rejected.set(attempt.job_id,await verifyMichmerRejectedReceipt({ledger,id:attempt.job_id}));
+      const provider=rejectedFormProvider(ledger,attempt.job_id);
+      rejected.set(attempt.job_id,{...(await provider.verify({ledger,id:attempt.job_id})),snapshotCheck:provider.snapshot});
     }
     return ledger.transaction(() => {
       if (!ledger.ownsLock()) throw new Error('Integrity recovery requires the active runner lock');
@@ -44,7 +56,7 @@ export async function resolveIntegrityPause(root, ledger) {
       for (const attempt of attempts) {
         if(attempt.outcome==='rejected') {
           const verified=rejected.get(attempt.job_id),job=jobs.find(j=>j.id===attempt.job_id);
-          if(!verified || verified.snapshot!==michmerRejectionSnapshot(ledger,attempt.job_id) || !['exception','rejected'].includes(job?.state) || job.payload.trackerSync?.verified===true || content.includes(`[autonomous:${attempt.job_id}]`))throw new Error('Rejected submission proof or absence of tracker credit cannot be verified');
+          if(!verified || verified.snapshot!==verified.snapshotCheck(ledger,attempt.job_id) || !['exception','rejected'].includes(job?.state) || job.payload.trackerSync?.verified===true || content.includes(`[autonomous:${attempt.job_id}]`))throw new Error('Rejected submission proof or absence of tracker credit cannot be verified');
           continue;
         }
         if (attempt.outcome !== 'confirmed') throw new Error('Non-confirmed durable attempt requires reconciliation');
@@ -58,6 +70,15 @@ export async function resolveIntegrityPause(root, ledger) {
             typeof receipt.reference !== 'string' || !receipt.reference.trim() || /[\r\n|]/.test(receipt.reference)) {
           throw new Error('Invalid durable submission receipt');
         }
+        const adapter=adapterFor(job.url);
+        const native=receipt.provider==='internshala' || job.payload.internshalaIntentFile || (receipt.kind==='form-confirmation' && adapter==='internshala');
+        if(native) {
+          if(receipt.kind!=='form-confirmation' || receipt.provider!=='internshala' || adapter!=='internshala')throw new Error('Native receipt provider or exact role scope mismatch');
+          const verified=verifyInternshalaApplicationReceipt({ledger,id:job.id});
+          if(JSON.stringify(verified.receipt)!==JSON.stringify(receipt))throw new Error('Native receipt differs from preserved provider proof');
+        } else if(receipt.kind==='gmail-accepted') {
+          if(receipt.provider && receipt.provider!=='gmail')throw new Error('Unsupported accepted email provider');
+        } else if(!['greenhouse','lever','ashby','michmer'].includes(adapter) || (receipt.provider && receipt.provider!==adapter))throw new Error('Unsupported or mismatched accepted form provider');
         const marker = `[autonomous:${job.id}]`;
         const own = rows.filter(row => row.notes.includes(marker));
         if (content.split(marker).length - 1 !== 1 || own.length !== 1) throw new Error('Missing or duplicate autonomous tracker marker');

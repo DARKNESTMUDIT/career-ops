@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { hash, validateClaims } from './policy.mjs';
-import { remoteRequirementDisclosure, studentStatusDisclosure, indiaLocationDisclosure } from './availability.mjs';
+import { availabilityDisclosure, remoteRequirementDisclosure, studentStatusDisclosure, indiaLocationDisclosure } from './availability.mjs';
 
 const escape = s => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 // Tailor emphasis by ordering bullet points within their original section. Never
@@ -32,6 +32,13 @@ export function tailoredResume(context, job) {
   if (studentStatus) body+=`\n<h2>Current student status</h2><p>${escape(studentStatus)}</p>`;
   const indiaLocation=indiaLocationDisclosure(context,job);
   if (indiaLocation) body+=`\n<h2>Application location</h2><p>${escape(indiaLocation)}</p>`;
+  // Form applications have no email body to carry the candidate's schedule.
+  // Include the same primary-backed limits in their PDF source as well, while
+  // preserving employer omissions as omissions and avoiding repeated paragraphs.
+  if(context?.policy?.applyWithStatedAvailability===true && ['remote','summer'].includes(job.track)) {
+    const remaining=availabilityDisclosure(context,job).split('\n\n').filter(text=>text && !body.includes(escape(text)));
+    if(remaining.length)body+=`\n<h2>Availability</h2>${remaining.map(text=>`<p>${escape(text)}</p>`).join('')}`;
+  }
   return { claims, html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Resume</title><style>@page{size:A4;margin:15mm}body{font:10pt Arial,sans-serif;line-height:1.25;color:#111}h1{font-size:21pt;margin:0 0 7px}h2{font-size:12.5pt;margin:11px 0 5px;border-bottom:1px solid #ccc;break-after:avoid}h3{font-size:10.5pt;margin:8px 0 4px;break-after:avoid}p{margin:3px 0;orphans:2;widows:2}</style></head><body>${body}</body></html>` };
 }
 

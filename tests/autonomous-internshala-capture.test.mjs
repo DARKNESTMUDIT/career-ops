@@ -77,3 +77,14 @@ test('lost response body retains actual HTTP metadata and cannot establish accep
   const proof=await capture.stop();assert.equal(JSON.parse(fs.readFileSync(path.join(f.options.proofDir,'response-metadata.json'))).status,200);assert.equal(proof.receiptCertified,false);assert.deepEqual(proof.har.log.entries[0].response,{});assert.equal(proof.failures[0].where,'response');
   assert.equal((await f.invoke(f.request())).aborted,1);
 });
+test('blocked background POST cannot leak the packet or invalidate the one exact application request',async t=>{
+  const f=fixture(t),capture=await captureInternshalaNativeSubmission(f.page,f.options);
+  const telemetry=f.request({endpoint:'https://analytics.example.invalid/collect'});
+  assert.equal((await f.invoke(telemetry)).aborted,1);
+  assert.equal((await f.invoke(f.request())).continued,1);
+  const proof=await capture.stop();
+  assert.equal(proof.deniedMutations.length,1);
+  assert.equal(proof.failures.length,0);
+  assert.equal(proof.har.log.entries.length,1);
+  assert.equal(proof.receiptCertified,false);
+});

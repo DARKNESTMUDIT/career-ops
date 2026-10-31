@@ -107,7 +107,7 @@ export function validateInternshalaFormObservation(observation,sourceUrl) {
   if(radios.length!==4 || radios.some(control=>control.type!=='radio') || JSON.stringify(radios.map(control=>control.value).sort())!==JSON.stringify(['no','serving-notice','to-serve-notice','yes'].sort()))throw Error('Availability choices changed');
   if(one('last_working_date').type!=='text' || one('confirm_availability_textarea').tag!=='textarea' || one('notice_period').tag!=='select')throw Error('Availability controls changed');
   if(JSON.stringify(one('notice_period').options?.filter(option=>!option.disabled).map(option=>option.value))!==JSON.stringify(['15','30','60','90','90+']))throw Error('Notice-period options changed');
-  if(one('custom_resume').type!=='file' || one('custom_resume').id!=='custom_resume' || one('custom_resume').multiple || one('submit').type!=='submit' || one('submit').id!=='submit')throw Error('Native resume or submit control changed');
+  if(one('custom_resume').type!=='file' || one('custom_resume').id!=='custom_resume' || one('custom_resume').multiple || one('submit').type!=='submit' || one('submit').id!=='submit' || one('submit').value!=='Submit')throw Error('Native resume or submit control changed');
   return {identity,hidden};
 }
 
@@ -166,6 +166,10 @@ export function planInternshalaNativeSubmission({observation,sourceUrl,answers,a
   if(pdf?.fieldName!=='custom_resume' || !/^[^/\\\r\n]+\.pdf$/i.test(pdf.filename ?? '') || !Number.isSafeInteger(pdf.size) || pdf.size<=0 || pdf.size>10485760 || !/^[a-f0-9]{64}$/.test(pdf.sha256 ?? '') || pdf.frozenBeforeIntent!==true)throw Error('Frozen current PDF required');
   if(nativeForm?.contract!==ARH_NATIVE_CONTRACT || nativeForm.pdfPartCount!==2 || nativeForm.formArtifact?.sha256!==sha(Buffer.from(observation.outerHTML ?? '')) || nativeForm.scriptArtifact?.sha256!==INTERNSHALA_SUBMIT_CONTRACT.sha256 || !/^[a-f0-9]{64}$/.test(nativeForm.scriptAttestation?.sha256 ?? '') || !nativeForm.scriptAttestation?.path)throw Error('Exact observed native artifacts required');
   const protocolFields=Object.fromEntries(Object.entries(hidden).filter(([name])=>name!=='internshipId').map(([name,value])=>[name,{value:name==='prefilled_custom_resume'?'':value,kind:'observed-hidden'}]));
+  // Actual observed jquery.validate adds this temporary hidden control before
+  // invoking the provider submitHandler, then removes it afterward. It is not
+  // a candidate answer or a pre-click FormData control.
+  protocolFields.submit={value:'Submit',kind:'observed-submit'};
   for(const name of ['last_working_date','confirm_availability_textarea'])if(!fields[name])protocolFields[name]={value:'',kind:'inactive-empty'};
   return {sourceUrl,jobId:identity.slug,jobIdField:'internshipId',fields,protocolFields,pdf,nativeForm,approvedSources,sourceProofs};
 }
@@ -215,7 +219,7 @@ export async function prepareInternshalaNativeSubmission(page,options) {
       used=true;
       assertIntent();
       const current=await inspectInternshalaNativeForm(page,{sourceUrl:intent.sourceUrl});
-      const expected={...Object.fromEntries(Object.entries(intent.protocolFields).map(([name,field])=>[name,field.value])),...Object.fromEntries(Object.entries(intent.fields).map(([name,field])=>[name,field.value])),[intent.jobIdField]:intent.jobId};
+      const expected={...Object.fromEntries(Object.entries(intent.protocolFields).filter(([name])=>name!=='submit').map(([name,field])=>[name,field.value])),...Object.fromEntries(Object.entries(intent.fields).map(([name,field])=>[name,field.value])),[intent.jobIdField]:intent.jobId};
       const actual=await page.evaluate(async()=>{
         const form=document.querySelector('#application-form'),fields=[];
         for(const [name,value] of new FormData(form)) {
@@ -238,7 +242,11 @@ export async function prepareInternshalaNativeSubmission(page,options) {
       responsePromise.catch(()=>{});
       await page.locator('#application-form input#submit[type="submit"]').click({timeout:15000});
       const response=await responsePromise;
-      const finished=await response.finished();
+      let finishTimer;
+      let finished;
+      try {
+        finished=await Promise.race([response.finished(),new Promise((_,reject)=>{finishTimer=setTimeout(()=>reject(Error('Native response body timeout; reconcile existing capture without retry')),20000);})]);
+      } finally {clearTimeout(finishTimer);}
       if(finished)throw Error('Native response did not finish; reconcile existing capture without retry');
       return {submittedControlInvoked:true,responseObserved:true,receiptCertified:false};
     }};

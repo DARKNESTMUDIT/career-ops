@@ -18,7 +18,7 @@ function fixture() {
   controls.push({name:'last_working_date',type:'text',tag:'input',value:''},{name:'confirm_availability_textarea',tag:'textarea',type:'textarea',value:''},
     {name:'notice_period',tag:'select',type:'select-one',options:['15','30','60','90','90+'].map(value=>({value,disabled:false}))},
     {name:'custom_resume',id:'custom_resume',type:'file',tag:'input'},
-    {name:'submit',id:'submit',type:'submit',tag:'input'});
+    {name:'submit',id:'submit',type:'submit',tag:'input',value:'Submit'});
   const outerHTML=`<form id="application-form"><input name="internshipId" value="${ARH_NATIVE_SLUG}"></form>`;
   const observation={url:sourceUrl,jobUrl:ARH_NATIVE_SLUG,scriptUrl:`https://internshala.com/static/js/application/${INTERNSHALA_SUBMIT_CONTRACT.script}`,formId:'application-form',method:'post',controls,outerHTML,explanationMaxLength:1000};
   const sourceSha256=hash('synthetic reviewed primary'),approvedSources=['cv.md'],sourceProofs={'cv.md':{sha256:sourceSha256}};
@@ -54,10 +54,11 @@ function nativeReceipt(change={}) {
   const scalar=(name,value)=>{chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));};
   const file=(bytes=pdfBytes)=>chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="custom_resume"; filename="current.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),bytes,Buffer.from('\r\n'));
   scalar(intent.jobIdField,intent.jobId);
-  for(const [name,field] of Object.entries({...intent.fields,...intent.protocolFields}))scalar(name,field.value);
+  for(const [name,field] of Object.entries({...intent.fields,...intent.protocolFields}))if(!(change.omitSubmit && name==='submit'))scalar(name,name==='submit' && change.wrongSubmit?'Other':field.value);
   file();if(change.pdfCount!==1)file(change.corruptSecond?Buffer.from('%PDF-stale'):pdfBytes);
   if(change.pdfCount===3)file();
   if(change.duplicateAnswer)scalar('confirm_availability','no');
+  if(change.duplicateSubmit)scalar('submit','Submit');
   if(change.extra)scalar('unknown','');
   chunks.push(Buffer.from(`--${boundary}--\r\n`));
   const body=Buffer.concat(chunks);
@@ -76,6 +77,9 @@ test('two PDF parts remain forbidden without the pinned native contract',()=>{
   const input=nativeReceipt();delete input.intent.nativeForm;delete input.intent.protocolFields;input.sealedIntentSha256=intentDigest(input.intent);
   const result=inspectInternshalaReceipt(input);
   assert.equal(result.requestProven,false);assert.ok(result.reasons.includes('duplicate_form_field'));
+});
+test('observed native validator submit control must occur exactly once with exact value',()=>{
+  for(const change of [{omitSubmit:true},{wrongSubmit:true},{duplicateSubmit:true},{changeIntent:i=>delete i.protocolFields.submit},{changeIntent:i=>i.protocolFields.submit.value='Other'}])assert.equal(inspectInternshalaReceipt(nativeReceipt(change)).requestProven,false);
 });
 test('native protocol cannot waive primary provenance, answer review, script pin or explicit empty whitelist',()=>{
   for(const changeIntent of [i=>i.answersReviewed=false,i=>i.nativeForm.scriptArtifact.sha256=hash('other script'),i=>i.protocolFields.unknown={value:'',kind:'inactive-empty'},i=>i.protocolFields.confirm_availability_textarea={value:'',kind:'inactive-empty'},i=>i.fields.confirm_availability.source='unapproved',i=>delete i.protocolFields.last_working_date])assert.equal(inspectInternshalaReceipt(nativeReceipt({changeIntent})).requestProven,false);
