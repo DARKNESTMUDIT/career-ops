@@ -48,9 +48,11 @@ function multipartParts(bytes, boundary) {
     if (split < 0) return null;
     const headers = segment.slice(0,split);
     const disposition = /^Content-Disposition: form-data; name="([^"]+)"(?:; filename="([^"]*)")?$/mi.exec(headers);
-    if (!disposition || fields.has(disposition[1]) || /\r|\n/.test(disposition[1])) return null;
+    if (!disposition || /\r|\n/.test(disposition[1])) return null;
     const payload = Buffer.from(segment.slice(split+4).replace(/\r\n$/, ''),'latin1');
-    fields.set(disposition[1], { filename:disposition[2] ?? null, bytes:payload, headers });
+    const parts=fields.get(disposition[1]) || [];
+    parts.push({ filename:disposition[2] ?? null, bytes:payload, headers });
+    fields.set(disposition[1],parts);
   }
   return fields;
 }
@@ -107,6 +109,24 @@ function checkIntent(intent, sealedDigest, reasons) {
   }
   const pdf = intent?.pdf;
   if (!pdf || !pdf.fieldName || !pdf.filename || !Number.isSafeInteger(pdf.size) || pdf.size <= 0 || !hex64(pdf.sha256) || pdf.frozenBeforeIntent !== true) reasons.push('missing_frozen_pdf_proof');
+  if(intent?.nativeForm || intent?.protocolFields) {
+    const native=intent.nativeForm,protocol=intent.protocolFields;
+    const slug='work-from-home-general-management-internship-at-arh-tubes-and-profiles-pvt-ltd1792564453';
+    if(native?.contract!=='arh-easy-apply-v1' || native.pdfPartCount!==2 || native.scriptArtifact?.sha256!==INTERNSHALA_SUBMIT_CONTRACT.sha256 || !hex64(native.formArtifact?.sha256) || !native.formArtifact?.path || !native.scriptArtifact?.path || identity?.slug!==slug || intent.jobId!==slug || intent.jobIdField!=='internshipId' || intent.answersReviewed!==true || pdf?.fieldName!=='custom_resume')reasons.push('unproven_native_form_contract');
+    const fixed={source:'easy_apply_modal',is_sequential_apply_flow:'',sequential_apply_referral:'similar_internships',last_applied_application_id:'',last_applied_job_profile:'',current_job_profile:'General Management',prefilled_custom_resume:''};
+    if(!protocol || typeof protocol!=='object' || Array.isArray(protocol))reasons.push('invalid_protocol_fields');
+    else {
+      for(const [name,field] of Object.entries(protocol)) {
+        const hidden=Object.hasOwn(fixed,name) || name==='csrf_test_name';
+        const valid=hidden ? field?.kind==='observed-hidden' && (name==='csrf_test_name' ? typeof field.value==='string' && field.value.length>0 : field.value===fixed[name]) : ['last_working_date','confirm_availability_textarea'].includes(name) && field?.kind==='inactive-empty' && field.value==='';
+        if(!valid || Object.hasOwn(intent.fields ?? {},name) || name===intent.jobIdField || name===pdf?.fieldName)reasons.push('invalid_protocol_fields');
+      }
+      if([...Object.keys(fixed),'csrf_test_name'].some(name=>!Object.hasOwn(protocol,name)))reasons.push('missing_protocol_fields');
+      const availability=intent.fields?.confirm_availability?.value;
+      const required=['confirm_availability',...(availability==='no'?['confirm_availability_textarea']:availability==='serving-notice'?['last_working_date']:availability==='to-serve-notice'?['notice_period']:[])];
+      if(!['yes','no','serving-notice','to-serve-notice'].includes(availability) || Object.keys(intent.fields ?? {}).length!==required.length || required.some(name=>!Object.hasOwn(intent.fields ?? {},name)) || ['last_working_date','confirm_availability_textarea'].some(name=>!Object.hasOwn(intent.fields ?? {},name) && !Object.hasOwn(protocol,name)))reasons.push('native_required_answers_missing');
+    }
+  }
   return identity;
 }
 
@@ -138,15 +158,21 @@ export function inspectInternshalaReceipt({intent, sealedIntentSha256, har, hist
   const parts = bytes && match ? multipartParts(bytes, match[1] || match[2]) : null;
   if (bytes && match && !parts) reasons.push('malformed_multipart_body');
   if (parts) {
-    const job = parts.get(intent.jobIdField);
+    const nativeDuplicate=intent.nativeForm?.contract==='arh-easy-apply-v1' && intent.nativeForm.pdfPartCount===2;
+    if([...parts].some(([name,values])=>values.length!==1 && !(nativeDuplicate && name===intent.pdf.fieldName && values.length===2)))reasons.push('duplicate_form_field');
+    const job = parts.get(intent.jobIdField)?.[0];
     if (!job || job.filename !== null || job.bytes.toString('utf8') !== intent.jobId) reasons.push('job_id_mismatch');
     for (const [key, field] of Object.entries(intent.fields)) {
-      const actual = parts.get(key);
+      const actual = parts.get(key)?.[0];
       if (!actual || actual.filename !== null || actual.bytes.toString('utf8') !== field.value) reasons.push('form_field_mismatch');
     }
-    const pdf = parts.get(intent.pdf.fieldName);
-    if (!pdf || pdf.filename !== intent.pdf.filename || pdf.bytes.length !== intent.pdf.size || sha256(pdf.bytes) !== intent.pdf.sha256 || !/\.pdf$/i.test(pdf.filename) || !/application\/pdf/i.test(pdf.headers)) reasons.push('pdf_boundary_mismatch');
-    const expectedNames=new Set([intent.jobIdField,...Object.keys(intent.fields),intent.pdf.fieldName]);
+    for(const [key,field] of Object.entries(intent.protocolFields ?? {})) {
+      const actual=parts.get(key)?.[0];
+      if(!actual || actual.filename!==null || actual.bytes.toString('utf8')!==field.value)reasons.push('protocol_field_mismatch');
+    }
+    const pdfs=parts.get(intent.pdf.fieldName);
+    if(!pdfs || pdfs.length!==(nativeDuplicate?2:1) || pdfs.some(pdf=>pdf.filename !== intent.pdf.filename || pdf.bytes.length !== intent.pdf.size || sha256(pdf.bytes) !== intent.pdf.sha256 || !/\.pdf$/i.test(pdf.filename) || !/^Content-Type:\s*application\/pdf\s*$/im.test(pdf.headers))) reasons.push('pdf_boundary_mismatch');
+    const expectedNames=new Set([intent.jobIdField,...Object.keys(intent.fields),...Object.keys(intent.protocolFields ?? {}),intent.pdf.fieldName]);
     if ([...parts.keys()].some(name=>!expectedNames.has(name))) reasons.push('unexpected_form_field');
   }
   const requestProven = reasons.length === 0;

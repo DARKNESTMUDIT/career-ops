@@ -3,6 +3,7 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {internshipIdentity,intentDigest,inspectInternshalaReceipt} from './internshala-receipts.mjs';
 import {installInternshalaNativeBody} from './internshala-native-body.mjs';
+import {validateInternshalaNativeArtifacts,inspectInternshalaNativeForm,assertInternshalaScriptAttestation} from './internshala-transport.mjs';
 
 // Unregistered capture component, NOT a submission adapter. It never fills,
 // uploads, clicks, reserves an application, updates outcomes or grants credit.
@@ -36,6 +37,15 @@ export async function captureInternshalaNativeSubmission(page,{ledger,id,intentF
   if(initial.reasons.some(reason=>reason!=='missing_har'))throw Error('Incomplete native intent');
   const identity=internshipIdentity(intent.sourceUrl);
   if(!identity || identity.sourceUrl!==job.url || page.url()!==job.url)throw Error('Native source identity mismatch');
+  if(intent.nativeForm) {
+    // Do not trust a caller's plan as evidence of the live form. Independently
+    // check private observed artifacts and the exact current native DOM before
+    // capture installation can precede any candidate field or file selection.
+    assertInternshalaScriptAttestation(page,intent,ledger.dir);
+    validateInternshalaNativeArtifacts(intent,ledger.dir);
+    const observed=await inspectInternshalaNativeForm(page,{sourceUrl:intent.sourceUrl});
+    if(sha(Buffer.from(observed.outerHTML))!==intent.nativeForm.formArtifact.sha256)throw Error('Live native form differs from sealed observation');
+  }
   const pdf=fs.readFileSync(privateFile(pdfPath,ledger.dir));
   if(!pdf.subarray(0,5).equals(Buffer.from('%PDF-')) || sha(pdf)!==intent.pdf?.sha256 || pdf.length!==intent.pdf?.size)throw Error('Frozen PDF mismatch');
   const parent=fs.realpathSync(path.dirname(proofDir));
