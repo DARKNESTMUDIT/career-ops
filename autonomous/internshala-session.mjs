@@ -9,6 +9,13 @@ import {isMainModule} from '../lib/is-main-module.mjs';
 // The normal Chrome extension session cannot export native network bodies.
 // Reuse the existing application-browser profile; never copy normal Chrome
 // cookies or credentials. This helper only opens and checks the resume page.
+export function internshalaSessionLaunchOptions() {
+  // Authentication was verified in visible vendor Chrome. Headless checks can
+  // show a login page for this same authenticated profile: do not infer logout.
+  // Keep ordinary Chrome's OS Keychain rather than Playwright's test keychain.
+  return {channel:'chrome',headless:false,acceptDownloads:false,serviceWorkers:'block',chromiumSandbox:true,ignoreDefaultArgs:['--use-mock-keychain','--password-store=basic']};
+}
+
 export async function inspectStudentSession(page,email) {
   if(typeof email!=='string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw Error('Primary account email required');
   const url=new URL(page.url());
@@ -22,7 +29,7 @@ export async function inspectStudentSession(page,email) {
 export async function connectInternshalaSession({root=getCareerOpsRoot(),timeoutMs=900000,onState=()=>{},launch=options=>chromium.launchPersistentContext(options.dir,options.launch)}={}) {
   const context=loadContext(root),dir=path.join(root,'data/autonomous/browser-profile');
   fs.mkdirSync(dir,{recursive:true,mode:0o700});
-  const browser=await launch({dir,launch:{channel:'chrome',headless:false,acceptDownloads:false,serviceWorkers:'block'}});
+  const browser=await launch({dir,launch:internshalaSessionLaunchOptions()});
   try {
     const page=browser.pages()[0] || await browser.newPage();
     await page.goto('https://internshala.com/student/resume',{waitUntil:'domcontentloaded',timeout:30000});

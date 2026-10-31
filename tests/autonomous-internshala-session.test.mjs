@@ -1,6 +1,15 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectStudentSession} from '../autonomous/internshala-session.mjs';
+import {inspectStudentSession,internshalaSessionLaunchOptions} from '../autonomous/internshala-session.mjs';
+test('authenticated profile uses visible Chrome and OS Keychain without weakening browser protections',()=>{
+  const options=internshalaSessionLaunchOptions();
+  assert.equal(options.channel,'chrome');
+  assert.equal(options.headless,false);
+  assert.equal(options.chromiumSandbox,true);
+  assert.equal(options.serviceWorkers,'block');
+  assert.deepEqual(options.ignoreDefaultArgs,['--use-mock-keychain','--password-store=basic']);
+  assert.equal(options.args,undefined);
+});
 function page(url='https://internshala.com/student/resume',text='Synthetic Student\nstudent@example.invalid',count=1){return{url:()=>url,locator:()=>({count:async()=>count,innerText:async()=>text})};}
 test('student session checks exact protected origin/path and primary account',async()=>{
   assert.deepEqual(await inspectStudentSession(page(),'student@example.invalid'),{connected:true,accountMatched:true});
