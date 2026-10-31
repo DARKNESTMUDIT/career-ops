@@ -100,7 +100,15 @@ export function validateInternshalaFormObservation(observation,sourceUrl) {
     if(found.length!==1)throw Error('Missing or repeated native control');
     return found[0];
   };
-  for(const question of contract.questions)one(question.name);
+  for(const question of contract.questions) {
+    const found=controls.filter(control=>control.name===question.name);
+    if(question.type==='radio') {
+      if(found.length!==question.options.length || !same(found.map(control=>({value:control.value,label:control.optionLabel,disabled:control.disabled===true})),question.options))throw Error('Native radio question options changed');
+    } else {
+      const control=one(question.name);
+      if(question.options && !same(control.options,question.options))throw Error('Native select question options changed');
+    }
+  }
   for(const name of hiddenNames)if(one(name).type!=='hidden')throw Error('Hidden protocol control changed');
   const hidden=Object.fromEntries(hiddenNames.map(name=>[name,one(name).value]));
   if(hidden.internshipId!==identity.slug || hidden.source!=='easy_apply_modal' || hidden.current_job_profile!==contract.role || hidden.sequential_apply_referral!=='similar_internships' || !hidden.csrf_test_name || ['is_sequential_apply_flow','last_applied_application_id','last_applied_job_profile'].some(name=>hidden[name]!==''))throw Error('Native hidden identity or flow changed');
@@ -124,9 +132,10 @@ export async function inspectInternshalaNativeForm(page,{sourceUrl}={}) {
       formId:form.id,method:form.method.toLowerCase(),outerHTML:form.outerHTML,
       controls:[...form.elements].map(control=>({name:control.name,tag:control.tagName.toLowerCase(),type:control.type,id:control.id,value:control.type==='file'?'':control.value,
         questionLabel:control.classList.contains('custom-question-answer')?control.closest('.additional_question')?.querySelector('.assessment_question label')?.textContent.replace(/\s+/g,' ').trim():null,
+        optionLabel:control.classList.contains('custom-question-answer') && control.type==='radio'?[...control.labels].map(label=>label.textContent.replace(/\s+/g,' ').trim()).join(' | '):null,
         questionRequired:control.classList.contains('custom-question-answer') && (control.required || control.getAttribute('aria-required')==='true'),
         disabled:control.disabled,multiple:control.multiple===true,customQuestion:control.classList.contains('custom-question-answer'),frameClose:control.classList.contains('frame-close'),chosenSearch:control.classList.contains('chosen-search-input'),
-        options:control.tagName==='SELECT'?[...control.options].map(option=>({value:option.value,disabled:option.disabled})):null})),
+        options:control.tagName==='SELECT'?[...control.options].map(option=>(control.classList.contains('custom-question-answer')?{value:option.value,label:option.textContent.replace(/\s+/g,' ').trim(),disabled:option.disabled}:{value:option.value,disabled:option.disabled})):null})),
       explanationMaxLength:typeof maxLength==='number'?maxLength:null};
   },scriptUrl);
   validateInternshalaFormObservation(observation,sourceUrl);
@@ -140,6 +149,27 @@ function privateBytes(file,root) {
   return fs.readFileSync(resolved);
 }
 
+
+// Parse only the original observed radio/select markup during browser-free
+// recovery. Canonical question names, labels, option order and mappings are
+// checked again; a hash alone never substitutes for the typed contract.
+function typedQuestionArtifactSchema(form,contract) {
+  const attr=(html,key)=>new RegExp(`\\b${key}="([^"]*)"`).exec(html)?.[1];
+  const text=html=>html.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim();
+  return form.split(/(?=<div\b[^>]*class="[^"]*\badditional_question\b[^"]*"[^>]*>)/).slice(1).map(block=>{
+    const label=text(/<div\b[^>]*class="assessment_question"[^>]*>\s*<label[^>]*>([\s\S]*?)<\/label>/.exec(block)?.[1] || '');
+    const controls=[...block.matchAll(/<input\b[^>]*>|<select\b[^>]*>[\s\S]*?<\/select>|<textarea\b[^>]*>[\s\S]*?<\/textarea>/g)].map(match=>match[0]).filter(html=>/\bclass="[^"]*\bcustom-question-answer\b/.test(html));
+    if(!controls.length)throw Error('Missing typed question artifact');
+    const name=attr(controls[0],'name'),question=contract.questions.find(question=>question.name===name);
+    if(!question || controls.some(control=>attr(control,'name')!==name))throw Error('Unknown typed question artifact');
+    const required=controls.every(control=>/\baria-required="true"/.test(control) && !/\sdisabled(?:[\s=>])/.test(control.split('>')[0]));
+    const options=question.type==='radio'?controls.map(control=>({value:attr(control,'value'),label:text(new RegExp(`<label\\b[^>]*for="${attr(control,'id')}"[^>]*>([\\s\\S]*?)<\\/label>`).exec(block)?.[1] || ''),disabled:false})):[...controls[0].matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option>/g)].map(match=>({value:attr(match[1],'value'),label:text(match[2]),disabled:/\bdisabled(?:\s|=|$)/.test(match[1])}));
+    const tag=controls[0].startsWith('<select')?'select':'input',type=tag==='select'?'select-one':attr(controls[0],'type');
+    if(question.type==='radio'?controls.length!==question.options.length:controls.length!==1)throw Error('Repeated typed question artifact');
+    return {name,label,tag,type,required,options,mapping:question.mapping};
+  });
+}
+
 export function validateInternshalaNativeArtifacts(intent,root) {
   const native=intent?.nativeForm,contract=internshalaNativeContract(intent?.sourceUrl);
   if(!contract || native?.contract!==contract.id || native.pdfPartCount!==2 || native.scriptArtifact?.sha256!==INTERNSHALA_SUBMIT_CONTRACT.sha256)throw Error('Pinned native form contract required');
@@ -150,7 +180,7 @@ export function validateInternshalaNativeArtifacts(intent,root) {
   if(!form.includes('id="application-form"') || !form.includes(`value="${contract.slug}"`))throw Error('Native form artifact identity mismatch');
   if(contract.questions.length) {
     if(!same(native.questionSchema,nativeQuestionSchema(contract)))throw Error('Sealed native questions changed');
-    const questions=[...form.matchAll(/<div\b[^>]*class="[^"]*\badditional_question\b[^"]*"[^>]*>([\s\S]*?<textarea\b[^>]*>[\s\S]*?<\/textarea>)/g)].map(match=>{
+    const questions=contract.questions.some(question=>question.options)?typedQuestionArtifactSchema(form,contract):[...form.matchAll(/<div\b[^>]*class="[^"]*\badditional_question\b[^"]*"[^>]*>([\s\S]*?<textarea\b[^>]*>[\s\S]*?<\/textarea>)/g)].map(match=>{
       const block=match[1],control=/<textarea\b([^>]*)>/.exec(block)?.[1] || '';
       return {name:/\bname="([^"]+)"/.exec(control)?.[1],label:/<label\b[^>]*>([\s\S]*?)<\/label>/.exec(block)?.[1]?.replace(/\s+/g,' ').trim(),tag:'textarea',type:'textarea',required:/\baria-required="true"/.test(control) && /\bclass="[^"]*\bcustom-question-answer\b/.test(control)};
     });
@@ -172,6 +202,7 @@ export function planInternshalaNativeSubmission({observation,sourceUrl,answers,a
   const needed=[...contract.questions.map(question=>question.name),'confirm_availability',...(availability==='no'?['confirm_availability_textarea']:availability==='serving-notice'?['last_working_date']:availability==='to-serve-notice'?['notice_period']:[])];
   if(Object.keys(fields).length!==needed.length || Object.keys(fields).some(name=>!needed.includes(name)))throw Error('Missing or unexpected reviewed answer');
   for(const field of Object.values(fields))if(typeof field.value!=='string' || !field.value.trim() || !approvedSources.includes(field.source) || !/^[a-f0-9]{64}$/.test(field.sourceSha256 ?? '') || sourceProofs?.[field.source]?.sha256!==field.sourceSha256)throw Error('Answer lacks approved primary provenance');
+  for(const question of contract.questions)if(question.options && (fields[question.name].mapping!==question.mapping || !question.options.some(option=>!option.disabled && option.value===fields[question.name].value)))throw Error('Typed answer mapping or option changed');
   if(availability==='serving-notice' && !/^\d{4}-\d{2}-\d{2}$/.test(fields.last_working_date.value))throw Error('Exact reviewed joining date required');
   if(availability==='to-serve-notice' && !['15','30','60','90','90+'].includes(fields.notice_period.value))throw Error('Unsupported notice period');
   if(availability==='no' && (!Number.isSafeInteger(observation.explanationMaxLength) || observation.explanationMaxLength<=0 || fields.confirm_availability_textarea.value.length>observation.explanationMaxLength))throw Error('Observed availability explanation limit required');
@@ -188,6 +219,31 @@ export function planInternshalaNativeSubmission({observation,sourceUrl,answers,a
 }
 
 function same(a,b){return JSON.stringify(a)===JSON.stringify(b);}
+
+// The provider deliberately overlays each native radio with its associated
+// label. The guarded preparation calls this only after intent and capture;
+// ordinary label activation preserves the provider's own change handlers.
+export async function selectInternshalaRadioOption(page,question,value) {
+  const option=question.options?.find(option=>option.value===value && !option.disabled);
+  if(question.tag!=='input' || question.type!=='radio' || !option || !/^[a-z0-9_]+$/.test(question.name) || !same(question.options,['Yes','No'].map(value=>({value,label:value,disabled:false}))))throw Error('Exact native radio option required');
+  if(await page.locator(`#application-form input[name="${question.name}"][type="radio"]`).count()!==question.options.length)throw Error('Exact native radio group required');
+  for(const expected of question.options) {
+    const member=page.locator(`#application-form input[name="${question.name}"][type="radio"][value="${expected.value}"]`);
+    if(await member.count()!==1 || !await member.isEnabled())throw Error('Native radio group options changed');
+    const memberId=await member.getAttribute('id');
+    if(!memberId || !/^[A-Za-z0-9_]+$/.test(memberId))throw Error('Exact associated native radio label required');
+    const memberLabel=page.locator(`#application-form label[for="${memberId}"]`);
+    if(await memberLabel.count()!==1 || !await memberLabel.isVisible() || (await memberLabel.innerText()).replace(/\s+/g,' ').trim()!==expected.label)throw Error('Native radio group labels changed');
+  }
+  const input=page.locator(`#application-form input[name="${question.name}"][type="radio"][value="${value}"]`);
+  if(await input.count()!==1 || !await input.isEnabled())throw Error('Unique enabled native radio required');
+  const id=await input.getAttribute('id');
+  if(!id || !/^[A-Za-z0-9_]+$/.test(id))throw Error('Exact associated native radio label required');
+  const label=page.locator(`#application-form label[for="${id}"]`);
+  if(await label.count()!==1 || (await label.innerText()).replace(/\s+/g,' ').trim()!==option.label || !await label.isVisible())throw Error('Exact visible native radio label required');
+  await label.click({timeout:15000});
+  if(!await input.isChecked() || await page.locator(`#application-form input[name="${question.name}"][type="radio"]:checked`).count()!==1)throw Error('Native radio label did not select the sealed option');
+}
 
 // captureFactory must be the existing guarded capture component. Injection
 // avoids a circular import when that component independently rechecks artifacts.
@@ -225,7 +281,15 @@ export async function prepareInternshalaNativeSubmission(page,options) {
       } else if(value)await control.fill(value);
       else await control.evaluate(element=>{element.value='';element.dispatchEvent(new Event('change',{bubbles:true}));});
     }
-    for(const question of internshalaNativeContract(intent.sourceUrl).questions)await page.locator(`#application-form [name="${question.name}"]`).fill(intent.fields[question.name].value);
+    for(const question of internshalaNativeContract(intent.sourceUrl).questions) {
+      const value=intent.fields[question.name].value,control=page.locator(`#application-form [name="${question.name}"]`);
+      if(question.type==='radio') {
+        assertIntent();
+        await selectInternshalaRadioOption(page,question,value);
+      }
+      else if(question.tag==='select')await control.selectOption(value,{force:true});
+      else await control.fill(value);
+    }
     if(intent.fields.notice_period)await page.locator('#application-form #notice_period').selectOption(intent.fields.notice_period.value,{force:true});
     await page.locator('#application-form #custom_resume').setInputFiles({name:intent.pdf.filename,mimeType:'application/pdf',buffer:bytes});
     return {capture,async submit() {

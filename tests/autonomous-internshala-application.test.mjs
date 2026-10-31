@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {Ledger} from '../autonomous/ledger.mjs';
-import {validateInternshalaApplicationAnswers,validateInternshalaPlatformResumeReview,verifyInternshalaHistoryBinding,verifyInternshalaApplicationReceipt,verifyInternshalaRejectedReceipt,internshalaRejectionSnapshot,reconcileInternshalaApplication,compareInternshalaCandidatePreparation,prepareInternshalaApplication,observeInternshalaApplication,submitInternshalaPrepared} from '../autonomous/internshala-application.mjs';
+import {validateInternshalaApplicationAnswers,validateInternshalaPlatformResumeReview,verifyInternshalaHistoryBinding,verifyInternshalaApplicationReceipt,verifyInternshalaRejectedReceipt,internshalaRejectionSnapshot,reconcileInternshalaApplication,compareInternshalaCandidatePreparation,prepareInternshalaApplication,observeInternshalaApplication,submitInternshalaPrepared,reconcileUnsentInternshalaAttempt} from '../autonomous/internshala-application.mjs';
 import {ARH_NATIVE_SLUG} from '../autonomous/internshala-transport.mjs';
 import {internshalaHistoryDigest} from '../autonomous/internshala-history.mjs';
 import {intentDigest} from '../autonomous/internshala-receipts.mjs';
@@ -193,4 +193,16 @@ test('unknown rejected receipt provider cannot fall through to another canonical
   input.ledger.update(input.id,'exception',{noRetry:true});integrityPause(input.ledger,'Synthetic unknown rejected provider');
   await assert.rejects(resolveIntegrityPause(input.root,input.ledger),/Unsupported or mismatched rejected form provider/);
   assert.equal(input.ledger.get('paused'),true);assert.equal(input.ledger.job(input.id).state,'exception');
+});
+
+
+test('a fabricated empty capture cannot erase original wire evidence or substitute for sealed native proofs',t=>{
+  const input=nativeAttemptFixture(t),{ledger,id,directory}=input;
+  const prior=ledger.status().attempts[0],wire=fs.readFileSync(path.join(directory,'request.json'));
+  fs.writeFileSync(path.join(directory,'capture.json'),JSON.stringify({attempt:prior.id,continued:false,failures:[],har:{log:{entries:[]}}}),{mode:0o600});
+  assert.throws(()=>reconcileUnsentInternshalaAttempt({ledger,id}),/Complete original native form and script proof required/);
+  assert.equal(ledger.status().attempts[0].outcome,'intent');
+  assert.equal(ledger.job(id).state,'uncertain');
+  assert.deepEqual(fs.readFileSync(path.join(directory,'request.json')),wire);
+  assert.equal(fs.readdirSync(directory).some(name=>name.startsWith('not-sent-receipt-')),false);
 });

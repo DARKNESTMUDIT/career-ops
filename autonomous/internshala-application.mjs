@@ -88,22 +88,30 @@ export async function observeInternshalaApplication(page,{ledger,id,directory}) 
 
 export function validateInternshalaApplicationAnswers({context,job,answers}) {
   if(answers?.reviewed!==true || !answers.fields || !Object.keys(answers.fields).length)throw Error('Reviewed mandatory answers required');
+  const contract=internshalaNativeContract(job.sourceUrl);
   const proofs=Object.fromEntries(primary.map(source=>{
     if(typeof context.sources?.[source]!=='string')throw Error('Current primary sources required');
     return [source,{sha256:sha(context.sources[source])}];
   }));
   for(const [name,field] of Object.entries(answers.fields)) {
     if(!primary.includes(field?.source) || field.sourceSha256!==proofs[field.source]?.sha256 || typeof field.quote!=='string' || !field.quote.trim() || !context.sources[field.source].includes(field.quote))throw Error('Mandatory answer lacks exact current primary provenance');
-    if(name!=='confirm_availability' && field.value!==field.quote && !(name==='confirm_availability_textarea' && field.value===availabilityDisclosure(context,job)))throw Error('Mandatory answer text must be primary-backed and reviewed');
+    if(name!=='confirm_availability' && !contract?.questions.some(question=>question.name===name && ['primary-boolean','primary-rating'].includes(question.answerKind)) && field.value!==field.quote && !(name==='confirm_availability_textarea' && field.value===availabilityDisclosure(context,job)))throw Error('Mandatory answer text must be primary-backed and reviewed');
   }
   if(answers.fields.confirm_availability?.value==='yes') {
     const remote=context.profile?.availability?.remote;
     if(job.track!=='remote' || remote?.earliest_start!=='immediate' || !/remote/i.test(remote.workplace || '') || answers.fields.confirm_availability.source!=='config/profile.yml' || !/immediate/i.test(answers.fields.confirm_availability.quote))throw Error('Immediate availability requires explicit primary remote availability');
   }
-  const contract=internshalaNativeContract(job.sourceUrl);
   for(const question of contract?.questions ?? []) {
     const field=answers.fields[question.name];
     if(!field)throw Error('Reviewed required native question answer missing');
+    if(question.answerKind==='primary-boolean') {
+      const value=context.profile.application_answers?.[question.primaryKey];
+      if(typeof value!=='boolean' || field.source!=='config/profile.yml' || field.mapping!==question.mapping || field.quote!==`${question.primaryKey}: ${value}` || field.value!==(value===true?'Yes':'No'))throw Error('Exact current primary boolean mapping required');
+    }
+    if(question.answerKind==='primary-rating') {
+      const values=context.profile.application_answers,rating=values?.project_management_self_rating;
+      if(!Number.isInteger(rating) || rating<1 || rating>5 || values.project_management_rating_scale!==5 || field.source!=='config/profile.yml' || field.mapping!==question.mapping || field.value!==String(rating) || !new RegExp(`^project_management_self_rating: ${rating}\\n[ \\t]+project_management_rating_scale: 5$`).test(field.quote))throw Error('Exact current primary integer rating and scale mapping required');
+    }
     if(question.answerKind==='tool-familiarity' && (field.source!=='cv.md' || !/^(?:Claude(?: Code)?|ChatGPT)(?:, (?:Claude(?: Code)?|ChatGPT))*$/.test(field.value)))throw Error('Only primary-backed tool familiarity is approved for this question');
     if(question.answerKind==='general-portfolio-url' && (field.source!=='config/profile.yml' || field.value!==context.profile.candidate?.portfolio_url || !/^https:\/\//.test(field.value)))throw Error('Only the approved general portfolio URL is available; no research sample claim is inferred');
   }
@@ -272,11 +280,11 @@ function nativeEvent(ledger,id,kind,attempt) {
   if(found.length!==1)throw Error('Missing or repeated durable native evidence event');
   return found[0];
 }
-function originalEvidence({ledger,id}) {
+function originalEvidence({ledger,id,beforeSendOnly=false}) {
   if(!ledger.ownsLock())throw Error('Native reconciliation requires active runner lock');
   const job=ledger.job(id);exactJob(job);
   const attempt=ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id);
-  if(!attempt || !['intent','confirmed','rejected'].includes(attempt.outcome))throw Error('Durable native attempt required');
+  if(!attempt || !(beforeSendOnly?['intent','aborted-before-send']:['intent','confirmed','rejected']).includes(attempt.outcome))throw Error('Durable native attempt required');
   if(!same(nativeEvent(ledger,id,'submission-intent',attempt.id).fingerprints,job.payload.fingerprints))throw Error('Original native reservation fingerprints changed');
   const bytes=file=>privateBytes(file,ledger.dir),read=file=>JSON.parse(bytes(file).toString('utf8'));
   const intent=read(job.payload.internshalaIntentFile),proofDir=job.payload.internshalaProofDir;
@@ -302,6 +310,12 @@ function originalEvidence({ledger,id}) {
   const baseline=verifyInternshalaHistoryBinding({ledger,id,intent});
   const captureIntentFile=path.join(proofDir,'capture-intent.json'),captureIntent=read(captureIntentFile);
   if(captureIntent.attempt!==attempt.id || captureIntent.ledgerJobId!==id || captureIntent.sealedIntentSha256!==job.payload.internshalaIntentSha256 || !same(captureIntent.intent,intent) || nativeEvent(ledger,id,'internshala-capture-started',attempt.id).seal!==sha(bytes(captureIntentFile)))throw Error('Private capture intent does not match durable reservation');
+  if(beforeSendOnly) {
+    const captureFile=path.join(proofDir,'capture.json'),captured=read(captureFile);
+    const wireEvents=ledger.db.prepare("SELECT kind FROM events WHERE job_id=? AND kind IN ('internshala-native-request-observed','internshala-native-response-observed')").all(id);
+    if(wireEvents.length || ['request.json','response.json','response-metadata.json'].some(name=>fs.existsSync(path.join(proofDir,name))) || captured.attempt!==attempt.id || captured.continued!==false || !Array.isArray(captured.failures) || captured.failures.length || !same(captured.har,{log:{entries:[]}}))throw Error('A completed zero-wire capture is required; missing or uncertain evidence cannot prove no send');
+    return {job,attempt,intent,proofDir,before:baseline.before,read,bytes,captureFile,captureSha256:sha(bytes(captureFile))};
+  }
   const requestFile=path.join(proofDir,'request.json'),request=read(requestFile);
   if(nativeEvent(ledger,id,'internshala-native-request-observed',attempt.id).requestHash!==sha(bytes(requestFile)))throw Error('Original native request differs from durable event');
   const responseFile=path.join(proofDir,'response.json');
@@ -367,9 +381,43 @@ export function verifyInternshalaRejectedReceipt({ledger,id}) {
   return {receipt,snapshot};
 }
 
+// A reserved local interaction can fail before the first admitted application
+// request. This is terminal and grants no application credit or retry rights.
+// Missing captures, any admitted request/event, response or capture failure
+// remain uncertain. The entire original sealed preparation is still required.
+export function internshalaUnsentSnapshot(ledger,id) {
+  const job=ledger.job(id),file=job?.payload?.internshalaUnsentReceiptFile;
+  return sha(JSON.stringify({base:internshalaRejectionSnapshot(ledger,id),receipt:file?sha(privateBytes(file,ledger.dir)):null,events:ledger.db.prepare("SELECT detail FROM events WHERE job_id=? AND kind='form-not-sent' ORDER BY id").all(id)}));
+}
+export function verifyInternshalaUnsentReceipt({ledger,id}) {
+  const snapshot=internshalaUnsentSnapshot(ledger,id),e=originalEvidence({ledger,id,beforeSendOnly:true});
+  const {job,attempt}=e;
+  if(attempt.outcome!=='aborted-before-send' || job.state!=='exception' || job.payload.noRetry!==true || job.payload.trackerSync?.verified===true)throw Error('Terminal unsent disposition required');
+  const file=job.payload.internshalaUnsentReceiptFile,receipt=e.read(file),event=nativeEvent(ledger,id,'form-not-sent',attempt.id);
+  if(receipt.kind!=='form-not-sent' || receipt.provider!=='internshala' || receipt.reference!==`internshala-unsent:${attempt.id}` || receipt.sourceUrl!==job.url || receipt.evidencePath!==e.captureFile || receipt.evidenceSha256!==e.captureSha256 || receipt.noRetry!==true || !Number.isFinite(Date.parse(receipt.at)) || event.receiptSha256!==sha(e.bytes(file)) || !same(JSON.parse(attempt.receipt),receipt) || snapshot!==internshalaUnsentSnapshot(ledger,id))throw Error('Unsent receipt or zero-wire capture changed');
+  return {receipt,snapshot};
+}
+export function reconcileUnsentInternshalaAttempt({ledger,id}) {
+  const e=originalEvidence({ledger,id,beforeSendOnly:true}),{job,attempt}=e;
+  if(attempt.outcome==='aborted-before-send')return {confirmed:false,notSent:true,noRetry:true,...verifyInternshalaUnsentReceipt({ledger,id})};
+  if(!['submitting','uncertain'].includes(job.state))throw Error('Reserved unresolved local interaction required');
+  const file=path.join(e.proofDir,`not-sent-receipt-${randomUUID()}.json`),receipt={kind:'form-not-sent',provider:'internshala',reference:`internshala-unsent:${attempt.id}`,sourceUrl:job.url,evidencePath:e.captureFile,evidenceSha256:e.captureSha256,noRetry:true,at:new Date().toISOString()},artifact=persist(file,receipt);
+  ledger.transaction(()=>{
+    const current=ledger.job(id),original=ledger.db.prepare('SELECT * FROM attempts WHERE job_id=?').get(id);
+    if(!ledger.ownsLock() || original.outcome!=='intent' || !['submitting','uncertain'].includes(current.state) || current.payload.internshalaIntentSha256!==job.payload.internshalaIntentSha256)throw Error('Original local interaction changed');
+    originalEvidence({ledger,id,beforeSendOnly:true});
+    ledger.db.prepare("UPDATE attempts SET outcome='aborted-before-send',receipt=? WHERE job_id=? AND outcome='intent'").run(JSON.stringify(receipt),id);
+    ledger.db.prepare("UPDATE jobs SET state='exception',payload=?,updated=? WHERE id=?").run(JSON.stringify({...current.payload,internshalaUnsentReceiptFile:file,noRetry:true,dryRunComplete:false,reasons:['Completed original capture proves no application request was admitted. Local interaction failed; no credit and never retry this attempt.']}),new Date().toISOString(),id);
+    ledger.event(id,'form-not-sent',{attempt:attempt.id,receiptSha256:artifact.sha256,captureSha256:e.captureSha256});
+  });
+  return {confirmed:false,notSent:true,noRetry:true,...verifyInternshalaUnsentReceipt({ledger,id})};
+}
+
 // Pure dispatch preflight. Bad or missing original proof cannot trigger a
 // browser launch merely by marking a job uncertain or naming an intent file.
 export function inspectInternshalaReconciliationState({ledger,id}) {
+  const job=ledger.job(id);
+  if(typeof job?.payload?.internshalaProofDir==='string' && !fs.existsSync(path.join(job.payload.internshalaProofDir,'request.json'))) {originalEvidence({ledger,id,beforeSendOnly:true});return {needsHistory:false,notSent:true};}
   const evidence=originalEvidence({ledger,id}),inspected=inspectOriginal(evidence);
   if(!inspected.requestProven)throw Error('Original native request cannot be proven; no retry permitted');
   if(!inspected.responseAccepted)return {needsHistory:false,responseAccepted:false,definitivelyRejected:definitiveNativeRejection(evidence)};
@@ -387,6 +435,8 @@ export function inspectInternshalaReconciliationState({ledger,id}) {
 // Only an already proven successful response permits a fresh read-only history
 // capture. A missing/unknown response body stays uncertain even if a row exists.
 export async function reconcileInternshalaApplication({root,ledger,id,page,historySnapshot}) {
+  const existing=ledger.job(id);
+  if(typeof existing?.payload?.internshalaProofDir==='string' && !fs.existsSync(path.join(existing.payload.internshalaProofDir,'request.json')))return reconcileUnsentInternshalaAttempt({ledger,id});
   const evidence=originalEvidence({ledger,id}),{job,attempt,intent,before}=evidence;
   if(attempt.outcome==='rejected')return {confirmed:false,rejected:true,noRetry:true,...verifyInternshalaRejectedReceipt({ledger,id})};
   if(attempt.outcome==='confirmed') {

@@ -118,6 +118,7 @@ function checkIntent(intent, sealedDigest, reasons) {
     const contract=internshalaNativeContract(intent.sourceUrl),slug=contract?.slug;
     if(!contract || native?.contract!==contract.id || native.pdfPartCount!==2 || native.scriptArtifact?.sha256!==INTERNSHALA_SUBMIT_CONTRACT.sha256 || !hex64(native.formArtifact?.sha256) || !native.formArtifact?.path || !native.scriptArtifact?.path || identity?.slug!==slug || intent.jobId!==slug || intent.jobIdField!=='internshipId' || intent.answersReviewed!==true || pdf?.fieldName!=='custom_resume')reasons.push('unproven_native_form_contract');
     if(contract?.questions.length && (JSON.stringify(native?.questionSchema)!==JSON.stringify(nativeQuestionSchema(contract)) || intent.company!==contract.company || intent.role!==contract.role))reasons.push('unproven_native_questions_or_identity');
+    for(const question of contract?.questions ?? [])if(question.options && (intent.fields?.[question.name]?.mapping!==question.mapping || !question.options.some(option=>!option.disabled && option.value===intent.fields?.[question.name]?.value)))reasons.push('unproven_typed_answer_mapping');
     const fixed={source:'easy_apply_modal',is_sequential_apply_flow:'',sequential_apply_referral:'similar_internships',last_applied_application_id:'',last_applied_job_profile:'',current_job_profile:contract?.role,prefilled_custom_resume:''};
     if(!protocol || typeof protocol!=='object' || Array.isArray(protocol))reasons.push('invalid_protocol_fields');
     else {

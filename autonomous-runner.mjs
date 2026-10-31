@@ -24,7 +24,7 @@ export async function reconcileApplicationForm({root,ledger,id}) {
   if(!job || !attempt)throw new Error('Existing durable form attempt required');
   const adapter=adapterFor(job.url);
   if(adapter==='internshala' && typeof job.payload.internshalaIntentFile==='string') {
-    if(['confirmed','rejected'].includes(attempt.outcome))return reconcileInternshalaApplication({root,ledger,id});
+    if(['confirmed','rejected','aborted-before-send'].includes(attempt.outcome))return reconcileInternshalaApplication({root,ledger,id});
     if(attempt.outcome!=='intent' || !['submitting','uncertain'].includes(job.state))throw new Error('Unresolved native intent required');
     if(!inspectInternshalaReconciliationState({ledger,id}).needsHistory)return reconcileInternshalaApplication({root,ledger,id});
     return withInternshalaApplicationSession(root,async page=>{
