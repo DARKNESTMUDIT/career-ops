@@ -55,7 +55,7 @@ test('fixture cannot register or bypass actual live adapter certification',async
 });
 test('observation refuses other roles before navigation or native interaction',async t=>{
   const {ledger}=lockedLedger(t),id=ledger.add('https://internshala.com/internship/detail/other-internship');
-  await assert.rejects(observeInternshalaApplication({}, {ledger,id,directory:ledger.dir}),/Only the observed ARH/);
+  await assert.rejects(observeInternshalaApplication({}, {ledger,id,directory:ledger.dir}),/Only exact observed native/);
   assert.equal(ledger.status().attempts.length,0);
 });
 test('preparation requires actual page-bound script/form observation and never fills first',async t=>{
@@ -150,7 +150,7 @@ test('generic HAR intents cannot gain native receipt or rejection credit regardl
   for(const options of [{body:'{"success":false}'},{body:'{"success":true}'},{omitResponse:true},{body:'{"unrecognized":true}'},{body:'not JSON'},{body:'{"error":"Unknown failure"}',status:500}]) {
     const input=nativeAttemptFixture(t,options);let reads=0;
     const before=fs.readFileSync(path.join(input.directory,'request.json'));
-    await assert.rejects(reconcileInternshalaApplication({...input,historySnapshot:()=>{reads++;throw Error('Incomplete native proof must not read history');}}),/Complete original ARH native form and script proof required/);
+    await assert.rejects(reconcileInternshalaApplication({...input,historySnapshot:()=>{reads++;throw Error('Incomplete native proof must not read history');}}),/Complete original native form and script proof required/);
     assert.equal(reads,0);assert.equal(input.ledger.job(input.id).state,'uncertain');assert.equal(input.ledger.status().attempts[0].outcome,'intent');
     assert.deepEqual(fs.readFileSync(path.join(input.directory,'request.json')),before);
     assert.equal(fs.readdirSync(input.directory).some(name=>name.startsWith('reconciliation-')),false);
@@ -175,7 +175,7 @@ test('canonical confirmed dispatch cannot promote generic HAR proof or launch br
   t.mock.method(chromium,'launchPersistentContext',()=>{launched++;throw Error('Incomplete stored proof must never open browser');});
   input.ledger.db.prepare("UPDATE attempts SET outcome='confirmed',receipt=? WHERE job_id=?").run(JSON.stringify({kind:'form-confirmation',provider:'internshala',reference:'SYNTHETIC-NO-CREDIT'}),input.id);
   input.ledger.update(input.id,'confirmed',{});
-  await assert.rejects(reconcileApplicationForm(input),/Complete original ARH native form and script proof required/);
+  await assert.rejects(reconcileApplicationForm(input),/Complete original native form and script proof required/);
   assert.equal(launched,0);assert.equal(input.ledger.job(input.id).state,'confirmed');assert.equal(input.ledger.job(input.id).payload.trackerSync,undefined);
 });
 test('guarded recovery refuses fabricated native rejection with missing mandatory original proof',async t=>{
@@ -183,7 +183,7 @@ test('guarded recovery refuses fabricated native rejection with missing mandator
   fs.writeFileSync(path.join(input.root,'data/applications.md'),emptyTracker);
   input.ledger.db.prepare("UPDATE attempts SET outcome='rejected',receipt=? WHERE job_id=?").run(JSON.stringify({kind:'form-rejected',provider:'internshala',reference:'SYNTHETIC-NO-CREDIT'}),input.id);
   input.ledger.update(input.id,'exception',{noRetry:true});integrityPause(input.ledger,'Synthetic missing original native proof');
-  await assert.rejects(resolveIntegrityPause(input.root,input.ledger),/Complete original ARH native form and script proof required/);
+  await assert.rejects(resolveIntegrityPause(input.root,input.ledger),/Complete original native form and script proof required/);
   assert.equal(input.ledger.get('paused'),true);assert.equal(input.ledger.job(input.id).state,'exception');assert.equal(input.ledger.job(input.id).payload.trackerSync,undefined);
 });
 test('unknown rejected receipt provider cannot fall through to another canonical verifier or clear integrity pause',async t=>{

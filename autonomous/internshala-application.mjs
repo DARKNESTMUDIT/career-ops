@@ -1,11 +1,12 @@
+import {internshalaNativeContract,nativeQuestionSchema} from './internshala-contracts.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {chromium} from 'playwright';
 import {internshalaSessionLaunchOptions,inspectStudentSession} from './internshala-session.mjs';
-import {ARH_NATIVE_CONTRACT,ARH_NATIVE_SLUG,installInternshalaScriptAttestation,inspectInternshalaNativeForm,planInternshalaNativeSubmission,prepareInternshalaNativeSubmission,assertInternshalaScriptAttestation,validateInternshalaNativeArtifacts} from './internshala-transport.mjs';
+import {installInternshalaScriptAttestation,inspectInternshalaNativeForm,planInternshalaNativeSubmission,prepareInternshalaNativeSubmission,assertInternshalaScriptAttestation,validateInternshalaNativeArtifacts} from './internshala-transport.mjs';
 import {captureInternshalaNativeSubmission} from './internshala-capture.mjs';
-import {internshipIdentity,intentDigest,inspectInternshalaReceipt} from './internshala-receipts.mjs';
+import {intentDigest,inspectInternshalaReceipt} from './internshala-receipts.mjs';
 import * as nativeReceipts from './internshala-receipts.mjs';
 import * as nativeHistory from './internshala-history.mjs';
 import {authorizeSubmission,integrityPause} from './rollout.mjs';
@@ -17,7 +18,7 @@ import {fetchFullPosting} from './discovery.mjs';
 import {syncReceipt} from './tracker.mjs';
 import {findBlacklistEntry} from '../scan.mjs';
 
-// Narrow ARH integration; authorizeSubmission independently enforces its scope.
+// Exact observed native contracts; live authorization independently gates each role.
 // Engineering fixtures never grant application or rollout receipt credit.
 // No retries, alternate POSTs, account creation, cookie export or resume reuse.
 const sha=value=>createHash('sha256').update(value).digest('hex');
@@ -38,7 +39,9 @@ function persist(file,value) {
   return {path:file,sha256:sha(bytes)};
 }
 function exactJob(job) {
-  if(internshipIdentity(job?.url)?.slug!==ARH_NATIVE_SLUG || job.payload?.sourceUrl!==job.url || job.payload?.role!=='General Management')throw Error('Only the observed ARH General Management role is supported');
+  const contract=internshalaNativeContract(job?.url);
+  if(!contract || job.payload?.sourceUrl!==job.url || job.payload?.role!==contract.role || contract.company && job.payload?.company!==contract.company)throw Error('Only exact observed native role/company contracts are supported');
+  return contract;
 }
 
 // Uses only the already dedicated profile and ordinary visible vendor Chrome
@@ -77,7 +80,8 @@ export async function observeInternshalaApplication(page,{ledger,id,directory}) 
   await button.click({timeout:15000});
   const observation=await inspectInternshalaNativeForm(page,{sourceUrl:job.url});
   const formArtifact=persist(path.join(directory,'observed-form.html'),observation.outerHTML);
-  const nativeForm={contract:ARH_NATIVE_CONTRACT,pdfPartCount:2,formArtifact,...script};
+  const contract=exactJob(job);
+  const nativeForm={contract:contract.id,pdfPartCount:2,formArtifact,...script,...(contract.questions.length?{questionSchema:nativeQuestionSchema(contract)}:{})};
   observationSessions.set(page,{id,sourceUrl:job.url,nativeForm,observation,deny,attestation});
   return {observation,nativeForm};
 }
@@ -95,6 +99,13 @@ export function validateInternshalaApplicationAnswers({context,job,answers}) {
   if(answers.fields.confirm_availability?.value==='yes') {
     const remote=context.profile?.availability?.remote;
     if(job.track!=='remote' || remote?.earliest_start!=='immediate' || !/remote/i.test(remote.workplace || '') || answers.fields.confirm_availability.source!=='config/profile.yml' || !/immediate/i.test(answers.fields.confirm_availability.quote))throw Error('Immediate availability requires explicit primary remote availability');
+  }
+  const contract=internshalaNativeContract(job.sourceUrl);
+  for(const question of contract?.questions ?? []) {
+    const field=answers.fields[question.name];
+    if(!field)throw Error('Reviewed required native question answer missing');
+    if(question.answerKind==='tool-familiarity' && (field.source!=='cv.md' || !/^(?:Claude(?: Code)?|ChatGPT)(?:, (?:Claude(?: Code)?|ChatGPT))*$/.test(field.value)))throw Error('Only primary-backed tool familiarity is approved for this question');
+    if(question.answerKind==='general-portfolio-url' && (field.source!=='config/profile.yml' || field.value!==context.profile.candidate?.portfolio_url || !/^https:\/\//.test(field.value)))throw Error('Only the approved general portfolio URL is available; no research sample claim is inferred');
   }
   const summer=context.profile?.availability?.summer;
   if(job.track==='summer' && (summer?.earliest_start!=='2027-06-01' || summer.latest_end!=='2027-07-31'))throw Error('Summer availability must remain June 1 to July 31, 2027');
@@ -270,7 +281,7 @@ function originalEvidence({ledger,id}) {
   const bytes=file=>privateBytes(file,ledger.dir),read=file=>JSON.parse(bytes(file).toString('utf8'));
   const intent=read(job.payload.internshalaIntentFile),proofDir=job.payload.internshalaProofDir;
   if(intent.durableReference!==attempt.id || intent.sourceUrl!==job.url || intent.company!==job.payload.company || intent.role!==job.payload.role || intentDigest(intent)!==job.payload.internshalaIntentSha256)throw Error('Stored native intent identity mismatch');
-  if(intent.nativeForm?.contract!==ARH_NATIVE_CONTRACT)throw Error('Complete original ARH native form and script proof required');
+  if(intent.nativeForm?.contract!==internshalaNativeContract(intent.sourceUrl)?.id)throw Error('Complete original native form and script proof required');
   validateInternshalaNativeArtifacts(intent,ledger.dir);
   if(!same(intent.approvedSources,primary) || !same(Object.keys(intent.sourceProofs || {}).sort(),[...primary].sort()))throw Error('Complete original primary proof set required');
   for(const source of primary) {

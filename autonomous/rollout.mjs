@@ -1,7 +1,6 @@
 import { dayInIndia, currentSchedule } from './policy.mjs';
 import { verifyBundle } from './bundle.mjs';
-import {internshipIdentity} from './internshala-receipts.mjs';
-import {ARH_NATIVE_SLUG} from './internshala-transport.mjs';
+import {internshalaNativeContract} from './internshala-contracts.mjs';
 
 // Validation is an explicit engineering gate, independent of evaluations.
 // Gmail dispatch/reconciliation, canonical tracker sync and integrity recovery
@@ -42,7 +41,7 @@ export function rolloutStatus(ledger, fingerprints, today = dayInIndia()) {
 export function authorizeSubmission(ledger, id, fingerprints, adapter, today = dayInIndia()) {
   // Certification of this one observed form can never authorize another role
   // merely because a caller supplies the same provider adapter name.
-  if(adapter==='internshala' && internshipIdentity(ledger.job(id)?.url)?.slug!==ARH_NATIVE_SLUG)throw new Error('Internshala certification scope is limited to the observed ARH role');
+  if(adapter==='internshala' && internshalaNativeContract(ledger.job(id)?.url)?.liveValidated!==true)throw new Error('Internshala certification scope is limited to the observed ARH role');
   const state = rolloutStatus(ledger, fingerprints, today);
   if (!ADAPTER_VALIDATION[adapter]) throw new Error(`Live adapter validation pending: ${adapter}`);
   if (!ledger.ownsLock()) throw new Error('Submission requires the active runner lock');

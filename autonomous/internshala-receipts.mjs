@@ -1,3 +1,4 @@
+import {internshalaNativeContract,nativeQuestionSchema} from './internshala-contracts.mjs';
 import { createHash } from 'node:crypto';
 import {INTERNSHALA_HISTORY_VERSION,verifyNextReceipt} from './internshala-history.mjs';
 export {assertInternshalaHistoryBefore,internshalaHistoryDigest} from './internshala-history.mjs';
@@ -114,9 +115,10 @@ function checkIntent(intent, sealedDigest, reasons) {
   if (!pdf || !pdf.fieldName || !pdf.filename || !Number.isSafeInteger(pdf.size) || pdf.size <= 0 || !hex64(pdf.sha256) || pdf.frozenBeforeIntent !== true) reasons.push('missing_frozen_pdf_proof');
   if(intent?.nativeForm || intent?.protocolFields) {
     const native=intent.nativeForm,protocol=intent.protocolFields;
-    const slug='work-from-home-general-management-internship-at-arh-tubes-and-profiles-pvt-ltd1792564453';
-    if(native?.contract!=='arh-easy-apply-v1' || native.pdfPartCount!==2 || native.scriptArtifact?.sha256!==INTERNSHALA_SUBMIT_CONTRACT.sha256 || !hex64(native.formArtifact?.sha256) || !native.formArtifact?.path || !native.scriptArtifact?.path || identity?.slug!==slug || intent.jobId!==slug || intent.jobIdField!=='internshipId' || intent.answersReviewed!==true || pdf?.fieldName!=='custom_resume')reasons.push('unproven_native_form_contract');
-    const fixed={source:'easy_apply_modal',is_sequential_apply_flow:'',sequential_apply_referral:'similar_internships',last_applied_application_id:'',last_applied_job_profile:'',current_job_profile:'General Management',prefilled_custom_resume:''};
+    const contract=internshalaNativeContract(intent.sourceUrl),slug=contract?.slug;
+    if(!contract || native?.contract!==contract.id || native.pdfPartCount!==2 || native.scriptArtifact?.sha256!==INTERNSHALA_SUBMIT_CONTRACT.sha256 || !hex64(native.formArtifact?.sha256) || !native.formArtifact?.path || !native.scriptArtifact?.path || identity?.slug!==slug || intent.jobId!==slug || intent.jobIdField!=='internshipId' || intent.answersReviewed!==true || pdf?.fieldName!=='custom_resume')reasons.push('unproven_native_form_contract');
+    if(contract?.questions.length && (JSON.stringify(native?.questionSchema)!==JSON.stringify(nativeQuestionSchema(contract)) || intent.company!==contract.company || intent.role!==contract.role))reasons.push('unproven_native_questions_or_identity');
+    const fixed={source:'easy_apply_modal',is_sequential_apply_flow:'',sequential_apply_referral:'similar_internships',last_applied_application_id:'',last_applied_job_profile:'',current_job_profile:contract?.role,prefilled_custom_resume:''};
     if(!protocol || typeof protocol!=='object' || Array.isArray(protocol))reasons.push('invalid_protocol_fields');
     else {
       for(const [name,field] of Object.entries(protocol)) {
@@ -126,7 +128,7 @@ function checkIntent(intent, sealedDigest, reasons) {
       }
       if([...Object.keys(fixed),'csrf_test_name','submit'].some(name=>!Object.hasOwn(protocol,name)))reasons.push('missing_protocol_fields');
       const availability=intent.fields?.confirm_availability?.value;
-      const required=['confirm_availability',...(availability==='no'?['confirm_availability_textarea']:availability==='serving-notice'?['last_working_date']:availability==='to-serve-notice'?['notice_period']:[])];
+      const required=[...(contract?.questions ?? []).map(question=>question.name),'confirm_availability',...(availability==='no'?['confirm_availability_textarea']:availability==='serving-notice'?['last_working_date']:availability==='to-serve-notice'?['notice_period']:[])];
       if(!['yes','no','serving-notice','to-serve-notice'].includes(availability) || Object.keys(intent.fields ?? {}).length!==required.length || required.some(name=>!Object.hasOwn(intent.fields ?? {},name)) || ['last_working_date','confirm_availability_textarea'].some(name=>!Object.hasOwn(intent.fields ?? {},name) && !Object.hasOwn(protocol,name)))reasons.push('native_required_answers_missing');
     }
   }
@@ -161,7 +163,7 @@ export function inspectInternshalaReceipt({intent, sealedIntentSha256, har, hist
   const parts = bytes && match ? multipartParts(bytes, match[1] || match[2]) : null;
   if (bytes && match && !parts) reasons.push('malformed_multipart_body');
   if (parts) {
-    const nativeDuplicate=intent.nativeForm?.contract==='arh-easy-apply-v1' && intent.nativeForm.pdfPartCount===2;
+    const nativeDuplicate=!!internshalaNativeContract(intent.sourceUrl) && intent.nativeForm?.contract===internshalaNativeContract(intent.sourceUrl)?.id && intent.nativeForm.pdfPartCount===2;
     if([...parts].some(([name,values])=>values.length!==1 && !(nativeDuplicate && name===intent.pdf.fieldName && values.length===2)))reasons.push('duplicate_form_field');
     const job = parts.get(intent.jobIdField)?.[0];
     if (!job || job.filename !== null || job.bytes.toString('utf8') !== intent.jobId) reasons.push('job_id_mismatch');

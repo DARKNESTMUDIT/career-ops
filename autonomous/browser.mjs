@@ -4,12 +4,12 @@ import { chromium } from 'playwright';
 import { hash } from './policy.mjs';
 import { authorizeSubmission } from './rollout.mjs';
 import { inspectLeverForm } from './form-receipts.mjs';
-import {ARH_NATIVE_SLUG} from './internshala-transport.mjs';
+import {internshalaNativeContract} from './internshala-contracts.mjs';
 
 export function adapterFor(url) {
   const u = new URL(url);
   if (u.protocol !== 'https:' || u.username || u.password || u.port) return null;
-  if(url===`https://internshala.com/internship/detail/${ARH_NATIVE_SLUG}`)return 'internshala';
+  if(internshalaNativeContract(url))return 'internshala';
   if (u.hostname === 'michmer.in' && u.pathname === '/careers' && !u.search && (!u.hash || u.hash === '#product-management')) return 'michmer';
   if (/^(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io$/.test(u.hostname)) return 'greenhouse';
   if (/^jobs(?:\.eu)?\.lever\.co$/.test(u.hostname)) return 'lever';
